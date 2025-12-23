@@ -90,7 +90,7 @@ class AlertManager:
         new_alerts = []
         
         for pattern in patterns:
-            if pattern.get('status') != 'confirmed':
+            if pattern.get('status') != 'CONFIRMED':
                 continue
             
             pattern_key = self._get_pattern_key(pattern)

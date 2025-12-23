@@ -364,13 +364,10 @@ def detect_double_bottom(df: pd.DataFrame, config: Dict) -> List[Dict]:
             
             status = 'FORMING'
             breakout_date = None
-            confirmation_end = min(idx2 + config['confirmation_days'], len(df) - 1)
             
-            if confirmation_end > idx2:
-                post_bottom_highs = high_prices[idx2:confirmation_end + 1]
-                if np.any(post_bottom_highs > neckline):
-                    status = 'CONFIRMED'
-                    breakout_date = find_breakout_date(df, idx2, neckline)
+            breakout_date = find_breakout_date(df, idx2, neckline, max_lookahead=config['confirmation_days'])
+            if breakout_date is not None:
+                status = 'CONFIRMED'
             
             pattern_height = neckline - avg_bottom
             target_price = neckline + pattern_height
@@ -625,7 +622,7 @@ def plot_double_bottom(symbol: str, df: pd.DataFrame, pattern: Dict,
              [pattern['bottom1_price'], pattern['neckline'], pattern['bottom2_price']],
              color='orange', linewidth=2, linestyle='-', alpha=0.8, marker='o')
     
-    status_color = 'green' if pattern['status'] == 'confirmed' else 'orange'
+    status_color = 'green' if pattern['status'] == 'CONFIRMED' else 'orange'
     status_text = pattern['status'].upper()
     
     ax1.set_title(f"{symbol} - Double Bottom Pattern ({status_text})\n"
