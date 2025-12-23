@@ -1,0 +1,54 @@
+You are an expert Python developer specializing in financial technical analysis and algorithmic trading. Create a complete, robust, and well-documented Python program that scans for **double bottom** chart patterns in NASDAQ-listed stocks using historical price data.
+
+Key requirements for the program:
+
+1. **Data Source**:
+   - Use yfinance to download historical daily OHLCV data (at least 2-3 years per stock to allow pattern detection).
+   - Fetch a list of NASDAQ stock symbols. Use a reliable free method: download the list from NASDAQ's official site (e.g., via requests from 'https://www.nasdaq.com/market-activity/stocks/screener?exchange=nasdaq&render=download' which provides a CSV) or use a static list from a known source if needed. Handle common symbols only (exclude ETFs if possible).
+
+2. **Double Bottom Detection Logic**:
+   - Implement a reliable algorithmic detection of classic double bottom ("W") patterns.
+   - Use swing low detection: Find local minima using scipy.signal.find_peaks on inverted Low prices (or a rolling window method).
+   - Core rules for a valid double bottom:
+     - Identify two distinct swing lows (Bottom1 and Bottom2) where the price difference between lows is ≤ 5% (configurable tolerance, default 3-4%).
+     - A swing high (peak) in between the two lows, with the peak at least 5-10% higher than the lows (configurable).
+     - Minimum separation between the two lows: 20-30 trading days (configurable, to avoid noise).
+     - Maximum separation: up to 200-300 days.
+     - Optional confirmation: Price breaks above the neckline (high between the two bottoms) after the second bottom, or RSI divergence (lower low in price but higher low in RSI).
+     - Detect both forming (unconfirmed) and confirmed patterns.
+   - Use Low prices primarily for bottoms, but consider Close for confirmation.
+   - Avoid false positives by requiring decreasing volume on the second bottom or other filters.
+
+3. **Program Functionality**:
+   - Scan all (or a user-specified subset) NASDAQ stocks.
+   - For each stock, check the most recent 1-2 years of data for potential double bottoms.
+   - Output a list of stocks with detected patterns, including:
+     - Stock symbol
+     - Dates of Bottom1, Peak, Bottom2
+     - Prices of the lows and neckline
+     - Pattern status (forming or confirmed)
+     - Optional: Projected target price (neckline + height of pattern)
+   - Sort results by most recent or strongest patterns.
+   - Save results to a CSV file and/or print a summary table.
+   - Include optional plotting: For detected stocks, plot the chart with matplotlib, marking the bottoms, peak, neckline, and pattern lines.
+
+4. **Libraries to Use**:
+   - pandas for data handling
+   - yfinance for data download
+   - numpy and scipy for peak detection (scipy.signal.find_peaks)
+   - matplotlib for optional charting
+   - requests or pandas.read_csv for NASDAQ symbols list
+   - Optional: ta-lib or pandas_ta for RSI/volume confirmation
+
+5. **Best Practices**:
+   - Make parameters configurable (e.g., via argparse or variables at top).
+   - Handle errors gracefully (e.g., bad symbols, no data).
+   - Add progress bar with tqdm for scanning many stocks.
+   - Include detailed comments and docstrings.
+   - Rate-limit yfinance downloads to avoid blocks (e.g., time.sleep(0.1)).
+   - Make the code modular: separate functions for fetching symbols, downloading data, detecting patterns, plotting.
+
+6. **Output Example**:
+   Provide sample output showing a few detected stocks, and if possible, generate a plot for one example.
+
+Finally, output the complete Python script in a single code block, ready to run. Explain any setup needed (e.g., pip install yfinance pandas scipy matplotlib tqdm).
