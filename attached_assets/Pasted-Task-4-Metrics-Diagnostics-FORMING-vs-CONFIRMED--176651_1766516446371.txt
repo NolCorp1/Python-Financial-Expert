@@ -1,0 +1,225 @@
+Task 4 — Metrics & Diagnostics (FORMING vs CONFIRMED)
+==============================================================================
+Objective
+---------
+Create a metrics and reporting layer that:
+- Converts trades.csv + equity.csv into meaningful performance statistics
+- Splits results by entry_kind (FORMING vs CONFIRMED)
+- Produces trader-grade diagnostics (expectancy, drawdown, profit factor)
+- Prevents false confidence by exposing trade distribution quality
+
+This task does NOT change strategy or backtest logic.
+It only analyzes results.
+
+Files to Edit
+-------------
+- metrics.py
+(Optional light wiring in main.py to print metrics after backtest)
+
+
+Required Inputs
+---------------
+- trades_df (from run_backtest):
+    Required columns:
+    - symbol
+    - pattern_id
+    - entry_kind ("FORMING" / "CONFIRMED")
+    - entry_date
+    - exit_date
+    - entry_price
+    - exit_price
+    - shares
+    - pnl_dollars
+    - pnl_r_multiple
+    - exit_reason
+    - hold_days
+- equity_df:
+    - date
+    - equity
+    - drawdown_pct
+
+
+1) Add Derived Trade Metrics
+----------------------------
+In metrics.py, implement a helper:
+
+    def enrich_trades(trades_df: pd.DataFrame) -> pd.DataFrame
+
+Add columns:
+- win: bool                     # pnl_dollars > 0
+- abs_r: abs(pnl_r_multiple)
+- capped_r: clip pnl_r_multiple to [-5, +10] for stability charts
+- trade_duration_days: hold_days
+- year: entry_date.year
+- month: entry_date.to_period("M")
+
+Return enriched DataFrame.
+
+
+2) Core Performance Metrics Function
+------------------------------------
+Implement:
+
+    def compute_trade_metrics(trades_df: pd.DataFrame) -> dict
+
+Metrics to compute:
+- trade_count
+- win_rate
+- avg_r
+- median_r
+- expectancy_r           # mean R
+- avg_win_r
+- avg_loss_r
+- win_loss_ratio
+- profit_factor          # sum(wins) / abs(sum(losses))
+- max_r
+- min_r
+- pct_trades_gt_1r
+- pct_trades_lt_minus_1r
+- avg_hold_days
+
+Guardrails:
+- If no trades → return empty-safe metrics (NaN or 0).
+
+
+3) Equity Curve Metrics
+-----------------------
+Implement:
+
+    def compute_equity_metrics(equity_df: pd.DataFrame) -> dict
+
+Metrics:
+- start_equity
+- end_equity
+- total_return_pct
+- max_drawdown_pct
+- max_drawdown_abs
+- recovery_days (bars to recover prior equity peak)
+- equity_volatility (std of daily returns)
+
+Optional (v2):
+- CAGR (if > ~6 months of data)
+- Sharpe ratio (daily, sqrt(252))
+
+
+4) Split Analysis (Critical)
+----------------------------
+Implement:
+
+    def compute_split_metrics(trades_df, equity_df) -> dict
+
+Produce metrics for:
+- ALL trades
+- FORMING only
+- CONFIRMED only
+
+Structure:
+{
+  "ALL": { trade_metrics + equity_metrics },
+  "FORMING": { trade_metrics },
+  "CONFIRMED": { trade_metrics }
+}
+
+NOTE:
+- Equity metrics apply to ALL only (unless you later run isolated equity curves).
+
+
+5) Drawdown Attribution (Optional but Powerful)
+------------------------------------------------
+Add helper:
+
+    def drawdown_attribution(trades_df, equity_df) -> pd.DataFrame
+
+Output table:
+- drawdown_start_date
+- drawdown_end_date
+- max_drawdown_pct
+- trades_during_drawdown
+- avg_r_during_dd
+- pct_forming_trades
+
+This tells you whether FORMING trades worsen drawdowns.
+
+
+6) Reporting / Printing
+-----------------------
+Implement:
+
+    def print_metrics_report(metrics: dict) -> None
+
+Output format (example):
+
+--------------------------------------------------
+OVERALL PERFORMANCE
+Trades: 19
+Win Rate: 63.2%
+Expectancy (R): +0.47
+Profit Factor: 1.92
+Max Drawdown: -4.26%
+Total Return: +7.36%
+
+--------------------------------------------------
+FORMING TRADES
+Trades: 10
+Win Rate: 50.0%
+Expectancy (R): +0.12
+Avg R: +0.18
+Profit Factor: 1.21
+
+--------------------------------------------------
+CONFIRMED TRADES
+Trades: 9
+Win Rate: 77.8%
+Expectancy (R): +0.91
+Avg R: +1.02
+Profit Factor: 3.45
+
+(Exact numbers will vary)
+
+
+7) main.py Wiring (Minimal)
+---------------------------
+After run_backtest():
+
+- Call compute_split_metrics()
+- Call print_metrics_report()
+- Optionally write metrics.json to outputs/
+
+
+Acceptance Criteria
+-------------------
+A) metrics.py produces:
+   - trade metrics
+   - equity metrics
+   - split metrics (ALL / FORMING / CONFIRMED)
+
+B) Output clearly shows whether:
+   - FORMING improves expectancy
+   - CONFIRMED has higher quality
+
+C) No changes to strategy or backtest behavior.
+
+D) Metrics are stable across reruns (deterministic).
+
+
+Manual Test Plan
+----------------
+1) Run:
+   python main.py --symbols AAPL NVDA AMD --backtest
+
+2) Confirm:
+   - Printed report contains ALL / FORMING / CONFIRMED sections
+   - Expectancy, profit factor, drawdown present
+   - Trade counts match trades.csv
+
+3) Sanity check:
+   - Profit factor > 1 implies net profitable
+   - Expectancy signs make sense
+
+
+Non-Goals
+---------
+- Parameter optimization
+- Walk-forward testing
+- Position scaling rules
+Those are Task 5+.
