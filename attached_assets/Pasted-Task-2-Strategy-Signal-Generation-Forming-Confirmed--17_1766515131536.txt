@@ -1,0 +1,205 @@
+Task 2 — Strategy Signal Generation (Forming + Confirmed)
+==============================================================================
+Objective
+---------
+Convert detected double-bottom patterns into actionable BUY trade signals for:
+- CONFIRMED patterns (neckline breakout)
+- FORMING patterns (early entry before neckline break)
+
+This task defines EXACT entry rules, stop logic, and target logic.
+No backtesting logic is implemented here — this task only produces signals.
+
+
+Files to Edit
+-------------
+- strategy.py
+
+
+High-Level Rules
+----------------
+The strategy generates LONG-only signals using two entry modes:
+
+1) CONFIRMED ENTRY
+   - Triggered when price closes above the neckline
+   - Entry occurs at NEXT trading day open
+
+2) FORMING ENTRY
+   - Triggered when price breaks above a post-bottom trigger level
+   - Entry occurs at NEXT trading day open
+   - Uses tighter risk control but same measured-move target
+
+
+Required Data Inputs
+--------------------
+The strategy MUST accept pattern records containing:
+- symbol
+- pattern_id
+- status (FORMING / CONFIRMED)
+- bottom1_price
+- bottom2_price
+- avg_bottom
+- neckline
+- target_price
+- forming_trigger_level
+- bottom2_date
+- breakout_date (CONFIRMED only)
+
+
+1) Define TradeSignal Dataclass
+-------------------------------
+Replace or create the following in `strategy.py`:
+
+    from dataclasses import dataclass
+    from typing import Optional
+
+    @dataclass
+    class TradeSignal:
+        symbol: str
+        pattern_id: str
+        entry_date: pd.Timestamp
+        entry_price: float
+        stop_loss: float
+        take_profit: float
+        entry_kind: str        # "FORMING" or "CONFIRMED"
+        trigger_level: float
+        risk_per_share: float
+        meta: dict
+
+
+2) Implement generate_signals(...)
+---------------------------------
+Replace any existing `generate_signals()` with:
+
+    def generate_signals(
+        df: pd.DataFrame,
+        patterns: list[dict],
+        stop_loss_buffer: float = 0.02,
+        forming_lookahead_days: int = 20,
+        forming_requires_green: bool = True,
+    ) -> list[TradeSignal]:
+
+Behavior:
+---------
+- Iterate over ALL patterns
+- Generate 0 or 1 signal per pattern
+- Signals must NEVER look forward in time beyond allowed windows
+- Signals must NEVER enter on the same bar that triggers the signal
+
+
+3) CONFIRMED Entry Logic
+------------------------
+Applicable when:
+- pattern["status"] == "CONFIRMED"
+- pattern["breakout_date"] is not None
+
+Steps:
+1) Locate breakout index in df using breakout_date
+2) Entry index = breakout_idx + 1
+3) If entry index is out of bounds → skip
+4) Entry price = df["Open"].iloc[entry_idx]
+
+Stops & Targets:
+- stop_loss = min(bottom1_price, bottom2_price) * (1 - stop_loss_buffer)
+- take_profit = target_price
+
+Validation:
+- entry_price > stop_loss
+- take_profit > entry_price
+
+Create TradeSignal:
+- entry_kind = "CONFIRMED"
+- trigger_level = neckline
+- risk_per_share = entry_price - stop_loss
+
+
+4) FORMING Entry Logic
+----------------------
+Applicable when:
+- pattern["status"] == "FORMING"
+- pattern["forming_trigger_level"] is not None
+
+Steps:
+1) Locate bottom2_idx using bottom2_date
+2) Search bars:
+     from bottom2_idx + 1
+     to   bottom2_idx + forming_lookahead_days
+3) Trigger condition:
+     - df["Close"] > forming_trigger_level
+     - AND (if forming_requires_green) Close > Open
+4) First bar that satisfies trigger → trigger_idx
+5) Entry index = trigger_idx + 1
+6) If entry index out of bounds → skip
+
+Entry price:
+- df["Open"].iloc[entry_idx]
+
+Stops & Targets:
+- Same structure stop as confirmed:
+    stop_loss = min(bottom1_price, bottom2_price) * (1 - stop_loss_buffer)
+- take_profit = target_price
+
+Validation:
+- entry_price > stop_loss
+- take_profit > entry_price
+
+Create TradeSignal:
+- entry_kind = "FORMING"
+- trigger_level = forming_trigger_level
+- risk_per_share = entry_price - stop_loss
+
+
+5) Meta Field (Required)
+------------------------
+Populate `meta` with:
+- avg_bottom
+- height
+- separation_days
+- pattern_score (if available)
+- pattern_status
+
+
+6) Signal Deduplication
+-----------------------
+Within generate_signals():
+- Ensure ONLY ONE signal per pattern_id
+- If both forming and confirmed could fire:
+    - Prefer CONFIRMED
+    - Skip forming
+
+
+Acceptance Criteria
+-------------------
+A) generate_signals() returns a list of TradeSignal objects
+B) Both FORMING and CONFIRMED signals are produced in a typical scan
+C) No signals:
+   - enter on the same bar that triggered them
+   - have stop >= entry
+   - have target <= entry
+D) TradeSignal includes pattern_id and entry_kind
+
+
+Manual Test Instructions
+------------------------
+1) Run scanner:
+   python main.py
+
+2) Run backtest (even if incomplete):
+   python main.py --backtest
+
+3) Print signals:
+   - Confirm mixture of FORMING and CONFIRMED entries
+   - Confirm entry dates occur AFTER trigger dates
+
+4) Spot check:
+   - FORMING entries should occur before neckline break
+   - CONFIRMED entries should occur after neckline break
+
+
+Non-Goals
+---------
+- No portfolio logic
+- No position sizing
+- No backtesting fills
+- No optimization
+
+Those come in Task 3.
