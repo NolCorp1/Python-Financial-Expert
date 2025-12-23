@@ -1,0 +1,244 @@
+Task 3 — No-Lookahead Backtester (Gap-Aware Fills, Frictions, Overlap Control)
+==============================================================================
+Objective
+---------
+Implement a robust, no-lookahead backtesting engine that:
+- Executes TradeSignal entries at NEXT BAR OPEN (never same-bar)
+- Exits using realistic intraday stop/target logic (including gap-through)
+- Applies slippage + commissions
+- Prevents overlapping positions per symbol (configurable)
+- Produces a trade blotter + equity curve inputs for metrics
+
+This task does NOT optimize parameters. It creates the truthful simulation core.
+
+Files to Edit
+-------------
+- backtester.py
+(Optionally minor wiring in main.py, only if needed to call new functions.)
+
+Assumptions
+-----------
+- `strategy.py` now produces `TradeSignal` objects with:
+    symbol, pattern_id, entry_kind, entry_date, entry_price,
+    stop_loss, take_profit, risk_per_share, meta
+- Price data per symbol is a DataFrame with columns:
+    Open, High, Low, Close, Volume
+  indexed by date (pd.Timestamp).
+
+Implementation Plan (Exact Requirements)
+---------------------------------------
+
+1) Define Backtest Config
+-------------------------
+In backtester.py add:
+
+- a dataclass `BacktestConfig` with:
+    initial_capital: float = 100000.0
+    risk_fraction_per_trade: float = 0.01        # 1% equity risk per trade
+    max_positions: int = 10
+    one_position_per_symbol: bool = True
+    allow_same_day_reentry: bool = False
+    slippage_bps: float = 5.0                    # 5 bps each side
+    commission_per_trade: float = 0.0            # per entry/exit
+    min_price: float = 1.0
+    max_hold_days: Optional[int] = None          # optional time stop, v1 can ignore
+
+IMPORTANT:
+- Position sizing is risk-based and uses stop distance.
+- If stop distance is <= 0, skip the trade.
+
+2) Create Trade Blotter Schema
+------------------------------
+Implement trade results as list[dict] and convert to DataFrame at end.
+
+Each trade row MUST include:
+- symbol
+- pattern_id
+- entry_kind
+- entry_date
+- entry_price
+- stop_loss
+- take_profit
+- shares
+- exit_date
+- exit_price
+- exit_reason             # "STOP", "TARGET", "TIME", "EOD" (EOD if forced exit)
+- pnl_dollars
+- pnl_r_multiple          # pnl / (risk_per_share * shares)
+- hold_days
+- slippage_bps
+- commissions
+- meta_json               # store signal.meta as JSON string for traceability
+
+3) Implement Core Backtest Function
+-----------------------------------
+Add function:
+
+    def run_backtest(
+        signals_by_symbol: dict[str, list[TradeSignal]],
+        price_data_by_symbol: dict[str, pd.DataFrame],
+        cfg: BacktestConfig
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+
+Returns:
+- trades_df: trade blotter
+- equity_df: daily equity curve (date, equity, drawdown_pct)
+
+Key behavior:
+- No lookahead: only use bars as time advances.
+- Maintain:
+    - cash
+    - open positions dict keyed by symbol
+    - equity = cash + sum(market value of open positions at Close)
+
+4) Sorting + Signal Scheduling
+------------------------------
+For each symbol:
+- Sort its signals by entry_date ascending.
+- Entry is executed at the OPEN of entry_date (which is already next-bar open
+  from Task 2). Still verify entry_date exists in df index.
+
+If entry_date not in df index:
+- Skip signal.
+
+5) Position Sizing (Risk-Based)
+-------------------------------
+On entry_date, compute:
+- stop_dist = entry_price - stop_loss
+- If stop_dist <= 0: skip
+- risk_budget = cfg.risk_fraction_per_trade * current_equity
+- shares = floor(risk_budget / stop_dist)
+
+Additionally enforce:
+- entry_price >= cfg.min_price
+- shares >= 1
+- If cfg.max_positions reached: skip
+- If cfg.one_position_per_symbol and symbol already in open positions: skip
+- If not cfg.allow_same_day_reentry and a trade in that symbol exited today: skip
+
+6) Apply Slippage + Commission (Entry)
+--------------------------------------
+Entry fill:
+- entry_fill = Open * (1 + cfg.slippage_bps/10000)
+- cash decreases by (entry_fill * shares) + cfg.commission_per_trade
+
+Store actual entry_price used as entry_fill.
+
+7) Exit Logic (Gap-Aware)
+-------------------------
+For each open position, on each trading day AFTER entry:
+- Use that day's Open/High/Low.
+
+Stop/Target rules:
+A) Gap through stop:
+   If Open <= stop_loss:
+       exit_price = Open * (1 - slippage)
+       exit_reason = "STOP"
+B) Gap through target:
+   If Open >= take_profit:
+       exit_price = Open * (1 - slippage)
+       exit_reason = "TARGET"
+C) Intraday stop:
+   Else if Low <= stop_loss:
+       exit_price = stop_loss * (1 - slippage)
+       exit_reason = "STOP"
+D) Intraday target:
+   Else if High >= take_profit:
+       exit_price = take_profit * (1 - slippage)
+       exit_reason = "TARGET"
+
+Conflict rule if both stop and target occur same day and neither gapped:
+- Use conservative ordering: assume STOP hits first.
+  (Reason: avoids optimistic bias.)
+
+Where slippage on exit is:
+- (1 - cfg.slippage_bps/10000) for sells.
+
+Commission on exit:
+- subtract cfg.commission_per_trade.
+
+Update cash:
+- cash += exit_price * shares - commission
+
+Compute pnl:
+- pnl_dollars = (exit_price - entry_fill) * shares - entry_commission - exit_commission
+- pnl_r_multiple = pnl_dollars / ( (entry_fill - stop_loss) * shares )
+  (Guard if denominator <= 0.)
+
+8) Equity Curve Computation
+---------------------------
+Create a daily equity series:
+- Iterate over the union of all dates across symbols (or a master calendar).
+Simpler v1:
+- Build a sorted list of all dates seen in any df.
+- On each date:
+    equity = cash + sum(open_position_shares * Close(symbol, date))
+- drawdown_pct = (equity / running_max_equity) - 1
+
+Return equity_df with:
+- date
+- equity
+- drawdown_pct
+
+9) Output and Integration
+-------------------------
+- trades_df must be sorted by entry_date.
+- equity_df must be sorted by date.
+
+Optionally add helper:
+
+    def group_signals_by_symbol(signals: list[TradeSignal]) -> dict[str, list[TradeSignal]]
+
+10) Minimal Wiring in main.py (If Needed)
+-----------------------------------------
+If main.py currently calls an old backtester interface, update it to:
+- collect signals for all symbols
+- build signals_by_symbol dict
+- call run_backtest
+- write:
+    outputs/trades.csv
+    outputs/equity.csv
+
+Acceptance Criteria
+-------------------
+A) No lookahead:
+   - Entry executed at entry_date OPEN only
+   - Exit decisions only use that day's OHLC (not future bars)
+
+B) Realistic exits:
+   - Gap-through stop/target handled
+   - Conservative handling when both stop and target touched intraday
+
+C) Frictions:
+   - Slippage applied to BOTH entry and exit
+   - Commission applied to BOTH entry and exit
+
+D) Overlap control works:
+   - If one_position_per_symbol=True, never see overlapping trades for same symbol
+   - If max_positions reached, new entries are skipped
+
+E) Outputs produced:
+   - trades_df with required columns
+   - equity_df with equity + drawdown_pct per date
+
+Manual Test Plan
+----------------
+1) Run a small subset backtest:
+   python main.py --symbols AAPL AMD NVDA TSLA --max-stocks 4 --backtest
+
+2) Verify:
+   - trades.csv exists and includes both entry_kind values
+   - No entry_date equals the trigger/breakout bar (should be next bar open)
+   - Equity curve file exists
+
+3) Spot-check a trade:
+   - Confirm stop/target levels respected
+   - Confirm slippage applied (entry > open, exit < open/stop/target)
+
+Non-Goals
+---------
+- Portfolio correlation constraints
+- Partial profit-taking
+- Trailing stops
+- Walk-forward optimization
+These come later (Task 4+).
