@@ -524,7 +524,7 @@ def run_walkforward_optimization(
                 df,
                 min_price=liquidity_config.get('min_price', 5.0),
                 min_avg_dollar_vol=liquidity_config.get('min_avg_dollar_vol', 20_000_000),
-                window=20
+                window=liquidity_config.get('window', 20)
             )
             if not passed:
                 n_failed_liq += 1
@@ -682,6 +682,8 @@ def main():
                        help='Minimum average dollar volume (20M default)')
     parser.add_argument('--disable-liquidity-filter', action='store_true',
                        help='Disable liquidity filtering')
+    parser.add_argument('--liquidity-window', type=int, default=20,
+                       help='Lookback window for avg dollar volume calculation')
     
     args = parser.parse_args()
     
@@ -698,6 +700,7 @@ def main():
         'min_price': args.min_price,
         'min_avg_dollar_vol': args.min_dollar_vol,
         'use_filter': not args.disable_liquidity_filter,
+        'window': args.liquidity_window,
     }
     
     results_df, best_params, summary_text = run_walkforward_optimization(

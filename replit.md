@@ -131,6 +131,12 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-23: Universe Expansion & Liquidity Filter (Task 6)
+  - New universe.py module with NASDAQ symbol caching and liquidity filtering
+  - get_nasdaq_symbols_cached() downloads and caches NASDAQ symbol list
+  - passes_liquidity_filter() checks min price ($5) and avg dollar volume (20M)
+  - CLI: --universe demo|nasdaq|custom, --min-price, --min-dollar-vol
+  - Outputs liquidity_filter_report.csv with per-symbol diagnostics
 - 2025-12-23: Walk-Forward Optimization (Task 5)
   - optimize.py with rolling train/test windows
   - Parameter grid search (~50-150 combinations)

@@ -113,7 +113,10 @@ def _download_nasdaq_symbols(exclude_funds: bool = True) -> List[str]:
         response.raise_for_status()
         
         from io import StringIO
-        df = pd.read_csv(StringIO(response.text))
+        try:
+            df = pd.read_csv(StringIO(response.text))
+        except Exception:
+            df = pd.read_csv(StringIO(response.text), on_bad_lines='skip')
         
         symbol_col = None
         name_col = None

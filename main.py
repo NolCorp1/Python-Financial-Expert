@@ -104,9 +104,9 @@ def scan_stocks_with_liquidity(
         if use_liquidity_filter:
             passed, diag = passes_liquidity_filter(
                 df,
-                min_price=liquidity_config['min_price'],
-                min_avg_dollar_vol=liquidity_config['min_avg_dollar_vol'],
-                window=liquidity_config['window']
+                min_price=liquidity_config.get('min_price', 5.0),
+                min_avg_dollar_vol=liquidity_config.get('min_avg_dollar_vol', 20_000_000),
+                window=liquidity_config.get('window', 20)
             )
             
             liquidity_report.append({
