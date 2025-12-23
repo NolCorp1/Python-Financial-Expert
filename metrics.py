@@ -249,3 +249,362 @@ def export_metrics_to_csv(metrics: Dict[str, Any], filename: str = 'backtest_met
     df = pd.DataFrame([metrics])
     df.to_csv(filename, index=False)
     print(f"Metrics saved to: {filename}")
+
+
+def enrich_trades(trades_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add derived columns to trades DataFrame for analysis.
+    
+    Adds:
+    - win: bool (pnl_dollars > 0)
+    - abs_r: abs(pnl_r_multiple)
+    - capped_r: pnl_r_multiple clipped to [-5, +10]
+    - trade_duration_days: copy of hold_days
+    - year: entry year
+    - month: entry month period
+    
+    Args:
+        trades_df: Raw trades DataFrame from run_backtest()
+        
+    Returns:
+        Enriched DataFrame with derived columns
+    """
+    if trades_df.empty:
+        return trades_df.copy()
+    
+    df = trades_df.copy()
+    
+    df['win'] = df['pnl_dollars'] > 0
+    df['abs_r'] = df['pnl_r_multiple'].abs()
+    df['capped_r'] = df['pnl_r_multiple'].clip(lower=-5, upper=10)
+    df['trade_duration_days'] = df['hold_days']
+    
+    entry_dates = pd.to_datetime(df['entry_date'])
+    df['year'] = entry_dates.dt.year
+    df['month'] = entry_dates.dt.to_period('M')
+    
+    return df
+
+
+def compute_trade_metrics(trades_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Compute core performance metrics from trades DataFrame.
+    
+    Metrics computed:
+    - trade_count, win_rate, avg_r, median_r, expectancy_r
+    - avg_win_r, avg_loss_r, win_loss_ratio, profit_factor
+    - max_r, min_r, pct_trades_gt_1r, pct_trades_lt_minus_1r
+    - avg_hold_days
+    
+    Args:
+        trades_df: Trades DataFrame (raw or enriched)
+        
+    Returns:
+        Dictionary of trade metrics
+    """
+    if trades_df.empty:
+        return {
+            'trade_count': 0,
+            'win_rate': np.nan,
+            'avg_r': np.nan,
+            'median_r': np.nan,
+            'expectancy_r': np.nan,
+            'avg_win_r': np.nan,
+            'avg_loss_r': np.nan,
+            'win_loss_ratio': np.nan,
+            'profit_factor': np.nan,
+            'max_r': np.nan,
+            'min_r': np.nan,
+            'pct_trades_gt_1r': np.nan,
+            'pct_trades_lt_minus_1r': np.nan,
+            'avg_hold_days': np.nan,
+        }
+    
+    n = len(trades_df)
+    r_values = trades_df['pnl_r_multiple']
+    wins = trades_df[trades_df['pnl_dollars'] > 0]
+    losses = trades_df[trades_df['pnl_dollars'] <= 0]
+    
+    win_rate = len(wins) / n * 100
+    avg_r = r_values.mean()
+    median_r = r_values.median()
+    expectancy_r = avg_r
+    
+    avg_win_r = wins['pnl_r_multiple'].mean() if len(wins) > 0 else np.nan
+    avg_loss_r = losses['pnl_r_multiple'].mean() if len(losses) > 0 else np.nan
+    
+    if len(losses) > 0 and avg_loss_r != 0:
+        win_loss_ratio = abs(avg_win_r / avg_loss_r) if not np.isnan(avg_win_r) else np.nan
+    else:
+        win_loss_ratio = np.inf if len(wins) > 0 else np.nan
+    
+    sum_wins = wins['pnl_dollars'].sum() if len(wins) > 0 else 0
+    sum_losses = abs(losses['pnl_dollars'].sum()) if len(losses) > 0 else 0
+    
+    if sum_losses > 0:
+        profit_factor = sum_wins / sum_losses
+    else:
+        profit_factor = np.inf if sum_wins > 0 else np.nan
+    
+    max_r = r_values.max()
+    min_r = r_values.min()
+    pct_trades_gt_1r = (r_values > 1).sum() / n * 100
+    pct_trades_lt_minus_1r = (r_values < -1).sum() / n * 100
+    avg_hold_days = trades_df['hold_days'].mean()
+    
+    return {
+        'trade_count': n,
+        'win_rate': round(win_rate, 1),
+        'avg_r': round(avg_r, 2),
+        'median_r': round(median_r, 2),
+        'expectancy_r': round(expectancy_r, 2),
+        'avg_win_r': round(avg_win_r, 2) if not np.isnan(avg_win_r) else np.nan,
+        'avg_loss_r': round(avg_loss_r, 2) if not np.isnan(avg_loss_r) else np.nan,
+        'win_loss_ratio': round(win_loss_ratio, 2) if not np.isinf(win_loss_ratio) else float('inf'),
+        'profit_factor': round(profit_factor, 2) if not np.isinf(profit_factor) else float('inf'),
+        'max_r': round(max_r, 2),
+        'min_r': round(min_r, 2),
+        'pct_trades_gt_1r': round(pct_trades_gt_1r, 1),
+        'pct_trades_lt_minus_1r': round(pct_trades_lt_minus_1r, 1),
+        'avg_hold_days': round(avg_hold_days, 1),
+    }
+
+
+def compute_equity_metrics(equity_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Compute equity curve metrics.
+    
+    Metrics computed:
+    - start_equity, end_equity, total_return_pct
+    - max_drawdown_pct, max_drawdown_abs
+    - recovery_days, equity_volatility
+    - sharpe_ratio (optional)
+    
+    Args:
+        equity_df: Equity DataFrame with date, equity, drawdown_pct
+        
+    Returns:
+        Dictionary of equity metrics
+    """
+    if equity_df.empty:
+        return {
+            'start_equity': np.nan,
+            'end_equity': np.nan,
+            'total_return_pct': np.nan,
+            'max_drawdown_pct': np.nan,
+            'max_drawdown_abs': np.nan,
+            'recovery_days': np.nan,
+            'equity_volatility': np.nan,
+            'sharpe_ratio': np.nan,
+        }
+    
+    equity = equity_df['equity']
+    start_equity = equity.iloc[0]
+    end_equity = equity.iloc[-1]
+    total_return_pct = (end_equity / start_equity - 1) * 100
+    
+    max_drawdown_pct = equity_df['drawdown_pct'].min()
+    peak = equity.cummax()
+    drawdown_abs = equity - peak
+    max_drawdown_abs = abs(drawdown_abs.min())
+    
+    underwater = drawdown_abs < 0
+    if underwater.any():
+        underwater_periods = underwater.astype(int).groupby((~underwater).cumsum()).cumsum()
+        recovery_days = int(underwater_periods.max())
+    else:
+        recovery_days = 0
+    
+    daily_returns = equity.pct_change().dropna()
+    equity_volatility = daily_returns.std() * np.sqrt(252) * 100 if len(daily_returns) > 1 else np.nan
+    
+    if len(daily_returns) > 1 and daily_returns.std() > 0:
+        sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+    else:
+        sharpe_ratio = np.nan
+    
+    return {
+        'start_equity': round(start_equity, 2),
+        'end_equity': round(end_equity, 2),
+        'total_return_pct': round(total_return_pct, 2),
+        'max_drawdown_pct': round(max_drawdown_pct, 2),
+        'max_drawdown_abs': round(max_drawdown_abs, 2),
+        'recovery_days': recovery_days,
+        'equity_volatility': round(equity_volatility, 2) if not np.isnan(equity_volatility) else np.nan,
+        'sharpe_ratio': round(sharpe_ratio, 2) if not np.isnan(sharpe_ratio) else np.nan,
+    }
+
+
+def compute_split_metrics(trades_df: pd.DataFrame, equity_df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """
+    Compute metrics split by entry_kind (ALL / FORMING / CONFIRMED).
+    
+    Args:
+        trades_df: Trades DataFrame with entry_kind column
+        equity_df: Equity DataFrame
+        
+    Returns:
+        Dictionary with keys 'ALL', 'FORMING', 'CONFIRMED',
+        each containing trade metrics (and equity metrics for ALL)
+    """
+    all_trade_metrics = compute_trade_metrics(trades_df)
+    all_equity_metrics = compute_equity_metrics(equity_df)
+    
+    all_metrics = {**all_trade_metrics, **all_equity_metrics}
+    
+    forming_trades = trades_df[trades_df['entry_kind'] == 'FORMING'] if not trades_df.empty else pd.DataFrame()
+    confirmed_trades = trades_df[trades_df['entry_kind'] == 'CONFIRMED'] if not trades_df.empty else pd.DataFrame()
+    
+    forming_metrics = compute_trade_metrics(forming_trades)
+    confirmed_metrics = compute_trade_metrics(confirmed_trades)
+    
+    return {
+        'ALL': all_metrics,
+        'FORMING': forming_metrics,
+        'CONFIRMED': confirmed_metrics,
+    }
+
+
+def drawdown_attribution(trades_df: pd.DataFrame, equity_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attribute drawdown periods to trade types.
+    
+    Identifies drawdown periods and analyzes which trade types
+    contributed to them.
+    
+    Args:
+        trades_df: Trades DataFrame with entry_kind
+        equity_df: Equity DataFrame with drawdown_pct
+        
+    Returns:
+        DataFrame with drawdown period analysis
+    """
+    if equity_df.empty or trades_df.empty:
+        return pd.DataFrame()
+    
+    equity = equity_df['equity'].copy()
+    dates = equity_df['date'].copy()
+    
+    peak = equity.cummax()
+    in_drawdown = equity < peak
+    
+    drawdown_periods = []
+    start_idx = None
+    
+    for i in range(len(in_drawdown)):
+        if in_drawdown.iloc[i] and start_idx is None:
+            start_idx = i
+        elif not in_drawdown.iloc[i] and start_idx is not None:
+            drawdown_periods.append((start_idx, i - 1))
+            start_idx = None
+    
+    if start_idx is not None:
+        drawdown_periods.append((start_idx, len(in_drawdown) - 1))
+    
+    results = []
+    for start_idx, end_idx in drawdown_periods:
+        start_date = pd.to_datetime(dates.iloc[start_idx])
+        end_date = pd.to_datetime(dates.iloc[end_idx])
+        
+        dd_equity = equity.iloc[start_idx:end_idx + 1]
+        peak_val = equity.iloc[max(0, start_idx - 1)] if start_idx > 0 else equity.iloc[0]
+        max_dd_pct = ((dd_equity.min() - peak_val) / peak_val) * 100
+        
+        trades_df_copy = trades_df.copy()
+        trades_df_copy['entry_date'] = pd.to_datetime(trades_df_copy['entry_date'])
+        
+        dd_trades = trades_df_copy[
+            (trades_df_copy['entry_date'] >= start_date) &
+            (trades_df_copy['entry_date'] <= end_date)
+        ]
+        
+        n_trades = len(dd_trades)
+        avg_r = dd_trades['pnl_r_multiple'].mean() if n_trades > 0 else np.nan
+        pct_forming = (dd_trades['entry_kind'] == 'FORMING').sum() / n_trades * 100 if n_trades > 0 else np.nan
+        
+        results.append({
+            'drawdown_start_date': start_date,
+            'drawdown_end_date': end_date,
+            'max_drawdown_pct': round(max_dd_pct, 2),
+            'trades_during_drawdown': n_trades,
+            'avg_r_during_dd': round(avg_r, 2) if not np.isnan(avg_r) else np.nan,
+            'pct_forming_trades': round(pct_forming, 1) if not np.isnan(pct_forming) else np.nan,
+        })
+    
+    return pd.DataFrame(results)
+
+
+def print_metrics_report(metrics: Dict[str, Dict[str, Any]]) -> None:
+    """
+    Print formatted metrics report with ALL / FORMING / CONFIRMED sections.
+    
+    Args:
+        metrics: Dictionary from compute_split_metrics()
+    """
+    print("\n" + "=" * 50)
+    print("OVERALL PERFORMANCE")
+    print("=" * 50)
+    
+    all_m = metrics.get('ALL', {})
+    print(f"Trades: {all_m.get('trade_count', 0)}")
+    
+    win_rate = all_m.get('win_rate', np.nan)
+    if not np.isnan(win_rate):
+        print(f"Win Rate: {win_rate:.1f}%")
+    
+    expectancy = all_m.get('expectancy_r', np.nan)
+    if not np.isnan(expectancy):
+        print(f"Expectancy (R): {expectancy:+.2f}")
+    
+    pf = all_m.get('profit_factor', np.nan)
+    if not np.isnan(pf) and not np.isinf(pf):
+        print(f"Profit Factor: {pf:.2f}")
+    elif np.isinf(pf):
+        print(f"Profit Factor: Inf (no losses)")
+    
+    max_dd = all_m.get('max_drawdown_pct', np.nan)
+    if not np.isnan(max_dd):
+        print(f"Max Drawdown: {max_dd:.2f}%")
+    
+    total_ret = all_m.get('total_return_pct', np.nan)
+    if not np.isnan(total_ret):
+        print(f"Total Return: {total_ret:+.2f}%")
+    
+    sharpe = all_m.get('sharpe_ratio', np.nan)
+    if not np.isnan(sharpe):
+        print(f"Sharpe Ratio: {sharpe:.2f}")
+    
+    for kind in ['FORMING', 'CONFIRMED']:
+        m = metrics.get(kind, {})
+        if m.get('trade_count', 0) == 0:
+            continue
+        
+        print("\n" + "-" * 50)
+        print(f"{kind} TRADES")
+        print("-" * 50)
+        
+        print(f"Trades: {m.get('trade_count', 0)}")
+        
+        win_rate = m.get('win_rate', np.nan)
+        if not np.isnan(win_rate):
+            print(f"Win Rate: {win_rate:.1f}%")
+        
+        expectancy = m.get('expectancy_r', np.nan)
+        if not np.isnan(expectancy):
+            print(f"Expectancy (R): {expectancy:+.2f}")
+        
+        avg_r = m.get('avg_r', np.nan)
+        if not np.isnan(avg_r):
+            print(f"Avg R: {avg_r:+.2f}")
+        
+        pf = m.get('profit_factor', np.nan)
+        if not np.isnan(pf) and not np.isinf(pf):
+            print(f"Profit Factor: {pf:.2f}")
+        elif np.isinf(pf):
+            print(f"Profit Factor: Inf (no losses)")
+        
+        avg_hold = m.get('avg_hold_days', np.nan)
+        if not np.isnan(avg_hold):
+            print(f"Avg Hold Days: {avg_hold:.1f}")
+    
+    print("\n" + "=" * 50)

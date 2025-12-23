@@ -30,8 +30,10 @@ from double_bottom_scanner import (
 )
 
 from strategy import TradeSignal, generate_signals
-from backtester import Backtest, BacktestResult, plot_equity_curve, print_trade_blotter
-from metrics import calculate_metrics, print_metrics
+from backtester import (Backtest, BacktestResult, plot_equity_curve, print_trade_blotter,
+                        run_backtest as run_backtest_v2, BacktestConfig, group_signals_by_symbol)
+from metrics import (calculate_metrics, print_metrics, 
+                     compute_split_metrics, print_metrics_report, enrich_trades)
 from alerts import AlertManager, check_and_alert
 
 
@@ -241,8 +243,10 @@ def main():
                        help='Suppress progress output')
     
     parser.add_argument('--backtest', action='store_true',
-                       help='Run backtesting on detected patterns')
-    parser.add_argument('--initial-capital', type=float, default=10000.0,
+                       help='Run backtesting on detected patterns (legacy)')
+    parser.add_argument('--backtest-v2', action='store_true',
+                       help='Run backtesting with FORMING/CONFIRMED split metrics')
+    parser.add_argument('--initial-capital', type=float, default=100000.0,
                        help='Initial capital for backtesting')
     parser.add_argument('--position-size', type=float, default=0.1,
                        help='Position size as fraction of capital (0.1 = 10%%)')
@@ -318,6 +322,65 @@ def main():
         print("="*70 + "\n")
         
         return result
+    
+    if args.backtest_v2:
+        print("\n" + "="*60)
+        print("NASDAQ DOUBLE BOTTOM PATTERN SCANNER - BACKTEST V2")
+        print("="*60)
+        print(f"Scanning {len(symbols)} symbol(s) with FORMING/CONFIRMED split metrics...")
+        print(f"Initial Capital: ${args.initial_capital:,.2f}")
+        print("="*60)
+        
+        results, price_data = scan_stocks(symbols, config, verbose=not args.quiet, return_price_data=True)
+        
+        if results.empty:
+            print("\nNo patterns found. Cannot run backtest.")
+            return results
+        
+        all_signals = []
+        for sym in price_data:
+            df = price_data[sym]
+            patterns = results[results['symbol'] == sym].to_dict('records')
+            signals = generate_signals(df, patterns)
+            all_signals.extend(signals)
+        
+        print(f"Generated {len(all_signals)} trade signals from {len(results)} patterns")
+        
+        signals_by_symbol = group_signals_by_symbol(all_signals)
+        
+        cfg = BacktestConfig(
+            initial_capital=args.initial_capital,
+            risk_fraction_per_trade=0.01,
+            max_positions=10,
+            one_position_per_symbol=True,
+            slippage_bps=5.0,
+            commission_per_trade=1.0
+        )
+        
+        trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)
+        
+        os.makedirs('outputs', exist_ok=True)
+        trades_df.to_csv('outputs/trades.csv', index=False)
+        equity_df.to_csv('outputs/equity.csv', index=False)
+        
+        enriched_trades = enrich_trades(trades_df)
+        split_metrics = compute_split_metrics(enriched_trades, equity_df)
+        print_metrics_report(split_metrics)
+        
+        import json
+        with open('outputs/metrics.json', 'w') as f:
+            serializable_metrics = {}
+            for key, val in split_metrics.items():
+                serializable_metrics[key] = {k: (v if not isinstance(v, float) or not (v != v) else None) for k, v in val.items()}
+            json.dump(serializable_metrics, f, indent=2, default=str)
+        
+        print("\nOutputs saved to:")
+        print("  - outputs/trades.csv")
+        print("  - outputs/equity.csv")
+        print("  - outputs/metrics.json")
+        print("="*60 + "\n")
+        
+        return trades_df, equity_df, split_metrics
     
     print("\n" + "="*60)
     print("NASDAQ DOUBLE BOTTOM PATTERN SCANNER")
