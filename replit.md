@@ -1,15 +1,19 @@
 # NASDAQ Double Bottom Pattern Scanner
 
 ## Overview
-A comprehensive Python program that scans for double bottom ("W") chart patterns in NASDAQ-listed stocks using historical price data from yfinance. The scanner uses algorithmic pattern detection with scipy, RSI divergence confirmation, and volume analysis.
+A comprehensive Python program that scans for double bottom ("W") chart patterns in NASDAQ-listed stocks using historical price data from yfinance. The scanner uses algorithmic pattern detection with scipy, RSI divergence confirmation, and volume analysis. Includes a full backtesting engine to evaluate strategy performance.
 
 ## Project Structure
 ```
 .
-├── main.py                    # Main entry point (demo mode or CLI)
+├── main.py                    # Main entry point (demo mode, CLI, or backtest)
 ├── double_bottom_scanner.py   # Core scanner module with all functions
+├── strategy.py                # Trading strategy and signal generation
+├── backtester.py              # Backtesting engine
+├── metrics.py                 # Performance metrics calculation
+├── alerts.py                  # Alert system for pattern breakouts
 ├── double_bottom_results.csv  # Output: detected patterns (generated)
-├── charts/                    # Output: generated pattern charts (generated)
+├── charts/                    # Output: charts and equity curves (generated)
 ├── pyproject.toml            # Python dependencies
 └── .gitignore                # Git ignore rules
 ```
@@ -23,6 +27,9 @@ A comprehensive Python program that scans for double bottom ("W") chart patterns
 - Configurable parameters via command-line arguments
 - CSV output with all detected patterns
 - Chart generation with matplotlib
+- **Backtesting engine** with bar-by-bar simulation
+- **Performance metrics** (win rate, Sharpe ratio, drawdown, etc.)
+- **Alert system** for confirmed pattern breakouts
 
 ## Usage
 
@@ -48,6 +55,33 @@ python main.py --price-tolerance 0.03 --min-peak-height 0.08
 # See all options
 python main.py --help
 ```
+
+### Backtesting
+```bash
+# Run backtest with default settings
+python main.py --backtest
+
+# Custom backtest configuration
+python main.py --backtest --symbols AAPL NVDA AMD --initial-capital 10000
+
+# Full configuration
+python main.py --backtest --max-stocks 50 \
+  --initial-capital 25000 \
+  --position-size 0.15 \
+  --stop-loss-buffer 0.02 \
+  --max-hold-days 60 \
+  --trailing-stop
+```
+
+### Backtest Parameters
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| --initial-capital | 10000 | Starting capital for simulation |
+| --position-size | 0.1 | Fraction of capital per trade (10%) |
+| --stop-loss-buffer | 0.02 | Buffer below support level (2%) |
+| --max-hold-days | 60 | Maximum holding period |
+| --trailing-stop | off | Enable trailing stop loss |
+| --trailing-stop-pct | 0.05 | Trailing stop percentage (5%) |
 
 ## Configuration Parameters
 | Parameter | Default | Description |
@@ -90,6 +124,12 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-23: Added complete backtesting strategy system
+  - Created strategy.py with TradeSignal dataclass and generate_signals()
+  - Created backtester.py with Backtest class for bar-by-bar simulation
+  - Created metrics.py with comprehensive performance metrics
+  - Created alerts.py with AlertManager for pattern breakout alerts
+  - Updated main.py with --backtest mode and CLI arguments
 - 2025-12-23: Initial implementation with full feature set
 
 ## Architecture Decisions
