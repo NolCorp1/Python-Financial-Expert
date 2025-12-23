@@ -131,6 +131,13 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-23: Metrics & Diagnostics (Task 4)
+  - enrich_trades() adds derived columns (win, abs_r, capped_r, year, month)
+  - compute_trade_metrics() for core stats (win_rate, expectancy, profit_factor)
+  - compute_equity_metrics() for equity stats (returns, drawdown, Sharpe)
+  - compute_split_metrics() splits by ALL/FORMING/CONFIRMED
+  - print_metrics_report() for formatted console output
+  - --backtest-v2 flag in main.py outputs metrics.json
 - 2025-12-23: No-Lookahead Backtester (Task 3)
   - BacktestConfig with risk-based sizing (1% equity risk per trade)
   - run_backtest() returns (trades_df, equity_df)
