@@ -27,6 +27,11 @@ from double_bottom_scanner import (
     download_stock_data,
     detect_double_bottom,
 )
+from universe import (
+    get_nasdaq_symbols_cached,
+    get_demo_symbols,
+    passes_liquidity_filter,
+)
 from strategy import generate_signals
 from backtester import run_backtest, BacktestConfig, group_signals_by_symbol
 from metrics import compute_trade_metrics, compute_equity_metrics, compute_split_metrics
@@ -459,7 +464,8 @@ def run_walkforward_optimization(
     min_trades_test: int = 8,
     grid_size_limit: int = 150,
     initial_capital: float = 100000.0,
-    verbose: bool = True
+    verbose: bool = True,
+    liquidity_config: Optional[Dict[str, Any]] = None
 ) -> Tuple[pd.DataFrame, Dict[str, Any], str]:
     """
     Run complete walk-forward optimization.
@@ -489,17 +495,44 @@ def run_walkforward_optimization(
     print(f"Max DD Train/Test: {max_dd_train*100:.0f}%/{max_dd_test*100:.0f}%")
     print("=" * 60)
     
+    if liquidity_config is None:
+        liquidity_config = {
+            'min_price': 5.0,
+            'min_avg_dollar_vol': 20_000_000,
+            'use_filter': True,
+        }
+    
+    use_liquidity = liquidity_config.get('use_filter', True)
+    
     print("\nStep 1: Downloading price data...")
     price_data = {}
     download_years = max(5, (train_bars + test_bars * 3) // 252 + 1)
     
-    iterator = tqdm(symbols, desc="Downloading") if verbose else symbols
+    n_total = len(symbols)
+    n_no_data = 0
+    n_failed_liq = 0
+    
+    iterator = tqdm(symbols, desc="Downloading & filtering") if verbose else symbols
     for symbol in iterator:
         df = download_stock_data(symbol, years=download_years)
-        if df is not None and len(df) > train_bars:
-            price_data[symbol] = df
+        if df is None or len(df) <= train_bars:
+            n_no_data += 1
+            continue
+        
+        if use_liquidity:
+            passed, diag = passes_liquidity_filter(
+                df,
+                min_price=liquidity_config.get('min_price', 5.0),
+                min_avg_dollar_vol=liquidity_config.get('min_avg_dollar_vol', 20_000_000),
+                window=20
+            )
+            if not passed:
+                n_failed_liq += 1
+                continue
+        
+        price_data[symbol] = df
     
-    print(f"Downloaded data for {len(price_data)} symbols")
+    print(f"Universe: {n_total} | Data OK: {n_total - n_no_data} | Liquidity pass: {len(price_data)}")
     
     if not price_data:
         print("ERROR: No valid price data downloaded")
@@ -638,10 +671,38 @@ def main():
     parser.add_argument('--quiet', action='store_true',
                        help='Suppress progress output')
     
+    parser.add_argument('--universe', type=str, default='custom',
+                       choices=['demo', 'nasdaq', 'custom'],
+                       help='Universe selection: demo (20 stocks), nasdaq (full cached list), custom (use --symbols)')
+    parser.add_argument('--max-stocks', type=int, default=None,
+                       help='Maximum number of stocks to scan')
+    parser.add_argument('--min-price', type=float, default=5.0,
+                       help='Minimum stock price for liquidity filter')
+    parser.add_argument('--min-dollar-vol', type=float, default=20_000_000,
+                       help='Minimum average dollar volume (20M default)')
+    parser.add_argument('--disable-liquidity-filter', action='store_true',
+                       help='Disable liquidity filtering')
+    
     args = parser.parse_args()
     
+    if args.universe == 'nasdaq':
+        symbols = get_nasdaq_symbols_cached(limit=args.max_stocks)
+    elif args.universe == 'demo':
+        symbols = get_demo_symbols()
+        if args.max_stocks:
+            symbols = symbols[:args.max_stocks]
+    else:
+        symbols = args.symbols
+    
+    liquidity_config = {
+        'min_price': args.min_price,
+        'min_avg_dollar_vol': args.min_dollar_vol,
+        'use_filter': not args.disable_liquidity_filter,
+    }
+    
     results_df, best_params, summary_text = run_walkforward_optimization(
-        symbols=args.symbols,
+        symbols=symbols,
+        liquidity_config=liquidity_config,
         train_bars=args.train_bars,
         test_bars=args.test_bars,
         step_bars=args.step_bars,

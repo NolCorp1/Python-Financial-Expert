@@ -29,12 +29,149 @@ from double_bottom_scanner import (
     detect_double_bottom,
 )
 
+from universe import (
+    get_nasdaq_symbols_cached,
+    get_demo_symbols,
+    passes_liquidity_filter,
+    filter_universe_by_liquidity,
+)
+
 from strategy import TradeSignal, generate_signals
 from backtester import (Backtest, BacktestResult, plot_equity_curve, print_trade_blotter,
                         run_backtest as run_backtest_v2, BacktestConfig, group_signals_by_symbol)
 from metrics import (calculate_metrics, print_metrics, 
                      compute_split_metrics, print_metrics_report, enrich_trades)
 from alerts import AlertManager, check_and_alert
+
+
+def scan_stocks_with_liquidity(
+    symbols: list,
+    config: dict,
+    use_liquidity_filter: bool = True,
+    liquidity_config: dict = None,
+    verbose: bool = True
+):
+    """
+    Scan stocks for double bottom patterns with optional liquidity filtering.
+    
+    Args:
+        symbols: List of stock symbols
+        config: Pattern detection config
+        use_liquidity_filter: Whether to apply liquidity filter
+        liquidity_config: Liquidity filter parameters
+        verbose: Show progress
+        
+    Returns:
+        Tuple of (results_df, price_data_dict)
+    """
+    from tqdm import tqdm
+    import pandas as pd
+    
+    if liquidity_config is None:
+        liquidity_config = {
+            'min_price': 5.0,
+            'min_avg_dollar_vol': 20_000_000,
+            'window': 20,
+        }
+    
+    n_total = len(symbols)
+    n_no_data = 0
+    n_failed_liquidity = 0
+    n_scanned = 0
+    n_patterns = 0
+    n_signals = 0
+    
+    price_data = {}
+    all_patterns = []
+    liquidity_report = []
+    
+    iterator = tqdm(symbols, desc="Downloading & filtering") if verbose else symbols
+    
+    for symbol in iterator:
+        df = download_stock_data(symbol, years=config['download_years'])
+        
+        if df is None or len(df) < 100:
+            n_no_data += 1
+            liquidity_report.append({
+                'symbol': symbol,
+                'pass_liquidity': False,
+                'price_last': None,
+                'avg_dollar_vol_20': None,
+                'reason': 'no_data'
+            })
+            continue
+        
+        if use_liquidity_filter:
+            passed, diag = passes_liquidity_filter(
+                df,
+                min_price=liquidity_config['min_price'],
+                min_avg_dollar_vol=liquidity_config['min_avg_dollar_vol'],
+                window=liquidity_config['window']
+            )
+            
+            liquidity_report.append({
+                'symbol': symbol,
+                'pass_liquidity': passed,
+                'price_last': diag.get('price_last'),
+                'avg_dollar_vol_20': diag.get('avg_dollar_vol_20'),
+                'reason': diag.get('reason')
+            })
+            
+            if not passed:
+                n_failed_liquidity += 1
+                continue
+        
+        lookback = min(config['lookback_days'], len(df))
+        df_recent = df.iloc[-lookback:]
+        price_data[symbol] = df_recent
+        n_scanned += 1
+        
+        patterns = detect_double_bottom(df_recent, config)
+        n_patterns += len(patterns)
+        
+        for pattern in patterns:
+            pattern['symbol'] = symbol
+            bottom2_date = pattern['bottom2_date']
+            date_str = pd.Timestamp(bottom2_date).strftime('%Y%m%d')
+            pattern['pattern_id'] = f"{symbol}_{date_str}_{pattern['status']}"
+            all_patterns.append(pattern)
+    
+    os.makedirs('outputs', exist_ok=True)
+    liq_df = pd.DataFrame(liquidity_report)
+    liq_df.to_csv('outputs/liquidity_filter_report.csv', index=False)
+    
+    print(f"\nUniverse: {n_total} symbols | Data OK: {n_total - n_no_data} | " 
+          f"Liquidity pass: {n_scanned} | Patterns: {n_patterns}")
+    
+    if not all_patterns:
+        return pd.DataFrame(), price_data
+    
+    results_df = pd.DataFrame(all_patterns)
+    
+    column_order = [
+        'pattern_id', 'symbol', 'status', 'score', 'strength_score',
+        'bottom1_date', 'bottom1_price',
+        'peak_date', 'peak_price', 'neckline',
+        'bottom2_date', 'bottom2_price',
+        'breakout_date',
+        'current_price', 'target_price',
+        'height', 'avg_bottom', 'separation_days',
+        'forming_trigger_level', 'forming_trigger_reason',
+        'price_diff_pct', 'peak_height_pct',
+        'volume_confirmation', 'rsi_divergence',
+        'bottom1_idx', 'peak_idx', 'bottom2_idx',
+    ]
+    
+    available_cols = [c for c in column_order if c in results_df.columns]
+    extra_cols = [c for c in results_df.columns if c not in column_order]
+    results_df = results_df[available_cols + extra_cols]
+    
+    results_df = results_df.sort_values(
+        ['status', 'score', 'bottom2_date'],
+        ascending=[False, False, False]
+    )
+    
+    return results_df, price_data
 
 
 def run_backtest(symbols: list, config: dict, 
@@ -259,6 +396,20 @@ def main():
     parser.add_argument('--trailing-stop-pct', type=float, default=0.05,
                        help='Trailing stop percentage from high (0.05 = 5%%)')
     
+    parser.add_argument('--universe', type=str, default='demo',
+                       choices=['demo', 'nasdaq', 'custom'],
+                       help='Universe selection: demo (20 stocks), nasdaq (full cached list), custom (use --symbols)')
+    parser.add_argument('--min-price', type=float, default=5.0,
+                       help='Minimum stock price for liquidity filter')
+    parser.add_argument('--min-dollar-vol', type=float, default=20_000_000,
+                       help='Minimum average dollar volume (20M default)')
+    parser.add_argument('--liquidity-window', type=int, default=20,
+                       help='Lookback window for avg dollar volume calculation')
+    parser.add_argument('--disable-liquidity-filter', action='store_true',
+                       help='Disable liquidity filtering (for debugging)')
+    parser.add_argument('--symbols-cache-max-age-hours', type=int, default=24,
+                       help='Max age in hours for cached NASDAQ symbol list')
+    
     args = parser.parse_args()
     
     config = DEFAULT_CONFIG.copy()
@@ -270,8 +421,28 @@ def main():
     
     if args.symbols:
         symbols = args.symbols
+        universe_name = 'custom'
+    elif args.universe == 'nasdaq':
+        symbols = get_nasdaq_symbols_cached(
+            max_age_hours=args.symbols_cache_max_age_hours,
+            limit=args.max_stocks
+        )
+        universe_name = 'nasdaq'
+    elif args.universe == 'demo':
+        symbols = get_demo_symbols()
+        if args.max_stocks:
+            symbols = symbols[:args.max_stocks]
+        universe_name = 'demo'
     else:
         symbols = get_nasdaq_symbols(max_symbols=args.max_stocks)
+        universe_name = 'legacy'
+    
+    use_liquidity_filter = not args.disable_liquidity_filter
+    liquidity_config = {
+        'min_price': args.min_price,
+        'min_avg_dollar_vol': args.min_dollar_vol,
+        'window': args.liquidity_window,
+    }
     
     if args.backtest:
         print("\n" + "="*60)
@@ -327,11 +498,17 @@ def main():
         print("\n" + "="*60)
         print("NASDAQ DOUBLE BOTTOM PATTERN SCANNER - BACKTEST V2")
         print("="*60)
-        print(f"Scanning {len(symbols)} symbol(s) with FORMING/CONFIRMED split metrics...")
+        print(f"Universe: {universe_name} ({len(symbols)} symbols)")
+        print(f"Liquidity filter: {'Disabled' if args.disable_liquidity_filter else f'min_price=${args.min_price}, min_vol=${args.min_dollar_vol/1e6:.0f}M'}")
         print(f"Initial Capital: ${args.initial_capital:,.2f}")
         print("="*60)
         
-        results, price_data = scan_stocks(symbols, config, verbose=not args.quiet, return_price_data=True)
+        results, price_data = scan_stocks_with_liquidity(
+            symbols, config, 
+            use_liquidity_filter=use_liquidity_filter,
+            liquidity_config=liquidity_config,
+            verbose=not args.quiet
+        )
         
         if results.empty:
             print("\nNo patterns found. Cannot run backtest.")
@@ -385,15 +562,20 @@ def main():
     print("\n" + "="*60)
     print("NASDAQ DOUBLE BOTTOM PATTERN SCANNER")
     print("="*60)
+    print(f"Universe: {universe_name} ({len(symbols)} symbols)")
+    print(f"Liquidity filter: {'Disabled' if args.disable_liquidity_filter else f'min_price=${args.min_price}, min_vol=${args.min_dollar_vol/1e6:.0f}M'}")
     print(f"Price tolerance: {config['price_tolerance']*100:.1f}%")
     print(f"Min peak height: {config['min_peak_height']*100:.1f}%")
     print(f"Separation range: {config['min_separation']}-{config['max_separation']} days")
     print(f"Lookback period: {config['lookback_days']} days")
     print("="*60 + "\n")
     
-    print(f"Scanning {len(symbols)} symbol(s)...")
-    
-    results = scan_stocks(symbols, config, verbose=not args.quiet)
+    results, price_data = scan_stocks_with_liquidity(
+        symbols, config, 
+        use_liquidity_filter=use_liquidity_filter,
+        liquidity_config=liquidity_config,
+        verbose=not args.quiet
+    )
     
     print_summary(results)
     
