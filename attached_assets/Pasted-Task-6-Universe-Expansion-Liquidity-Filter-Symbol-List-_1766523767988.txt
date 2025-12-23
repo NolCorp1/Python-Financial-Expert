@@ -1,0 +1,201 @@
+Task 6 — Universe Expansion + Liquidity Filter + Symbol List Caching
+==============================================================================
+Objective
+---------
+Increase out-of-sample trade counts (and therefore statistical confidence) by:
+1) Scanning a MUCH larger NASDAQ common-stock universe (not just mega-caps/demo list)
+2) Filtering out illiquid / penny-ish names with a simple liquidity gate
+3) Caching the NASDAQ symbol list locally so runs are fast + stable + reproducible
+
+This task should NOT change pattern detection logic.
+It changes which symbols you scan and adds a pre-filter step.
+
+Files to Edit / Add
+-------------------
+- double_bottom_scanner.py
+- main.py
+- optimize.py (optional: accept universe flags)
+- Add: universe.py (recommended) OR keep inside double_bottom_scanner.py
+
+New Outputs
+-----------
+- data/nasdaq_symbols_cache.csv
+- outputs/liquidity_filter_report.csv (optional but recommended)
+- (existing) outputs/double_bottom_results.csv remains
+
+
+1) Implement NASDAQ Symbol List Download + Cache
+------------------------------------------------
+Add a dedicated function (preferably in new universe.py):
+
+    NASDAQ_SCREENER_URL = "https://www.nasdaq.com/market-activity/stocks/screener?exchange=nasdaq&render=download"
+
+    def get_nasdaq_symbols_cached(
+        cache_path: str = "data/nasdaq_symbols_cache.csv",
+        max_age_hours: int = 24,
+        exclude_funds: bool = True,
+        limit: int | None = None,
+    ) -> list[str]:
+
+Behavior:
+- If cache exists and is newer than max_age_hours -> load from cache
+- Else download CSV from NASDAQ endpoint -> parse -> write cache
+- Always return uppercase ticker list
+
+Parsing requirements:
+- Must handle common column names: Symbol, Name
+- Exclude ETFs/funds using name heuristics:
+    tokens = ["ETF","ETN","Fund","Trust","Index","Shares","iShares","Vanguard","Invesco","ProShares","Direxion","WisdomTree","VanEck","Global X","First Trust","SPDR"]
+- Exclude weird tickers:
+    - any with "^", "/", "="
+    - any with "." (optional)
+    - any length > 6 (optional)
+- If limit is provided -> slice list
+
+Acceptance Criteria:
+- Running scanner without --symbols and without demo mode uses cached NASDAQ list.
+- Cache file is created in data/ if missing.
+- Cache refreshes after max_age_hours.
+
+
+2) Add Liquidity Filter (Pre-Scan Gate)
+---------------------------------------
+Implement a fast liquidity filter using yfinance, using 60–90 trading days:
+- Compute:
+    avg_dollar_volume_20 = mean(Close*Volume, last 20 bars)
+    price_last = last Close
+- Filter conditions (v1 defaults):
+    price_last >= 5.0
+    avg_dollar_volume_20 >= 20_000_000  (20M)
+
+Implement function (universe.py or scanner module):
+
+    def passes_liquidity_filter(
+        df: pd.DataFrame,
+        min_price: float = 5.0,
+        min_avg_dollar_vol: float = 20_000_000,
+        window: int = 20
+    ) -> tuple[bool, dict]:
+
+Return:
+- bool pass/fail
+- diagnostics dict containing:
+    price_last, avg_dollar_vol_20
+
+Notes:
+- If df missing Volume -> fail (or skip symbol)
+- If df too short -> fail
+
+Acceptance Criteria:
+- Liquidity filter is applied BEFORE pattern detection for a symbol.
+- Failures are counted and optionally logged.
+
+
+3) Wire Liquidity Filter into Scan Flow
+---------------------------------------
+Wherever you loop symbols to download data and scan:
+- After download_history(symbol):
+    ok, info = passes_liquidity_filter(df, ...)
+    if not ok: continue
+- Only then run detect_double_bottoms(...) and generate signals.
+
+Add counters:
+- n_total_symbols
+- n_no_data
+- n_failed_liquidity
+- n_scanned
+- n_patterns_found
+- n_signals_generated
+
+Optionally write a report:
+- outputs/liquidity_filter_report.csv
+Columns:
+- symbol
+- pass_liquidity
+- price_last
+- avg_dollar_vol_20
+- reason (if failed: "min_price", "min_dollar_vol", "no_data")
+
+Acceptance Criteria:
+- Scan prints a clear summary:
+    "Universe: 3200 symbols | Data OK: 2800 | Liquidity pass: 900 | Scanned: 900 | Patterns: X | Signals: Y"
+
+
+4) Add CLI Flags (main.py)
+--------------------------
+Add these args to main.py:
+
+Universe selection:
+- --universe {demo,nasdaq,custom}
+    demo: existing demo behavior (20 symbols)
+    nasdaq: full cached NASDAQ list
+    custom: uses --symbols list
+
+Symbol controls:
+- --symbols AAPL NVDA AMD (already exists)
+- --max-stocks N (already exists)
+
+Liquidity controls:
+- --min-price 5
+- --min-dollar-vol 20000000
+- --liquidity-window 20
+- --disable-liquidity-filter  (for debugging)
+
+Cache controls:
+- --symbols-cache-max-age-hours 24
+
+Default behavior change:
+- Keep demo as default when running plain `python main.py`
+- BUT allow user to do:
+    python main.py --universe nasdaq --max-stocks 1000
+
+Acceptance Criteria:
+- demo remains default for quick tests
+- full universe is available via --universe nasdaq
+- liquidity filter can be tuned via CLI
+
+
+5) Optional: Optimize CLI uses Universe + Liquidity too (optimize.py)
+---------------------------------------------------------------------
+In optimize.py:
+- Add same universe selection flags (demo/nasdaq/custom)
+- Add liquidity thresholds
+- Ensure walk-forward windows run on a sufficiently large symbol set so:
+    "Quality test windows (min trades met)" increases materially.
+
+Acceptance Criteria:
+- optimize.py can run with:
+    python optimize.py --universe nasdaq --max-stocks 800 --min-price 5 --min-dollar-vol 20000000
+
+
+Manual Test Plan
+----------------
+1) Demo unchanged:
+   python main.py
+
+2) Full universe small run:
+   python main.py --universe nasdaq --max-stocks 200 --min-price 5 --min-dollar-vol 20000000
+
+3) Liquidity sensitivity:
+   python main.py --universe nasdaq --max-stocks 500 --min-dollar-vol 10000000
+   (Should scan more names, produce more patterns/signals.)
+
+4) Walk-forward improvement check:
+   python optimize.py --universe nasdaq --max-stocks 800 --min-trades-test 20
+   Expect more valid/quality windows vs the 7-symbol run.
+
+
+Acceptance Criteria (Task-Level)
+--------------------------------
+A) NASDAQ symbol list is cached to data/nasdaq_symbols_cache.csv and reused
+B) Liquidity filter reduces junk symbols and increases OOS trade count per window
+C) main.py supports --universe nasdaq and liquidity flags
+D) optimize.py (optional but preferred) supports same universe + liquidity flags
+
+
+Non-Goals
+---------
+- No strategy logic changes
+- No exit/stop improvements
+- No optimization objective changes
+Those are next tasks (Task 7+).
