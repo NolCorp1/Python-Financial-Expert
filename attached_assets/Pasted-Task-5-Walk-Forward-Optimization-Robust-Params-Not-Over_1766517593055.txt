@@ -1,0 +1,234 @@
+Task 5 — Walk-Forward Optimization (Robust Params, Not Overfit)
+==============================================================================
+Objective
+---------
+Implement walk-forward optimization so parameters are selected based on
+out-of-sample performance and stability.
+
+This task MUST:
+- run rolling train/test windows
+- grid-search a SMALL, controlled param space
+- pick params by OOS objective with drawdown constraint
+- write a results CSV and a "best params" JSON
+- optionally print a stability summary (how often each param wins)
+
+This task does NOT change core detection/strategy/backtest logic.
+It orchestrates them repeatedly.
+
+Files to Add / Edit
+-------------------
+- Add: optimize.py  (new)
+- Optional: main.py (wire a --walk-forward flag to call optimize.py)
+
+
+Key Interfaces Assumed (already in your project)
+------------------------------------------------
+- Scanner:
+    scan_stocks(..., return_price_data=True) -> (patterns_df, price_data_by_symbol)
+  OR equivalent function that returns:
+    - patterns (list/dict or dataframe) per symbol
+    - price_data_by_symbol: dict[symbol] -> df(OHLCV)
+
+- Strategy:
+    generate_signals(df, patterns, stop_loss_buffer=..., forming_lookahead_days=..., ...) -> list[TradeSignal]
+
+- Backtester:
+    run_backtest(signals_by_symbol, price_data_by_symbol, cfg) -> (trades_df, equity_df)
+
+- Metrics:
+    compute_trade_metrics(trades_df) -> dict
+    compute_equity_metrics(equity_df) -> dict
+    compute_split_metrics(trades_df, equity_df) -> dict
+
+
+1) Implement Windowing Helpers
+------------------------------
+In optimize.py implement:
+
+A) build_walkforward_windows(dates, train_bars, test_bars, step_bars) -> list[tuple[start_train, end_train, start_test, end_test]]
+
+Defaults (v1):
+- train_bars = 504   # ~2 years
+- test_bars  = 126   # ~6 months
+- step_bars  = 126   # advance by test window
+
+Use trading bars from a "master calendar" derived from one representative symbol
+or union of dates. Keep it simple: pick the first symbol's df index as calendar.
+
+B) slice_price_data(price_data_by_symbol, start_date, end_date) -> dict[symbol] -> df
+Inclusive slicing for date ranges.
+
+
+2) Define a Tight Parameter Grid (Start Small)
+----------------------------------------------
+In optimize.py create a param grid list of dicts like:
+
+grid = [
+  {
+    "low_tolerance": 0.03,
+    "neckline_min_rise": 0.06,
+    "min_sep": 20,
+    "max_sep": 260,
+    "forming_lookahead_days": 15,
+    "stop_loss_buffer": 0.02,
+    "breakout_buffer": 0.002
+  },
+  ...
+]
+
+Start with ~50–150 combos max.
+
+Recommended v1 ranges:
+- low_tolerance:        [0.03, 0.04, 0.05]
+- neckline_min_rise:    [0.06, 0.08, 0.10]
+- min_sep:              [20, 25, 30]
+- forming_lookahead:    [10, 15, 20]
+- stop_loss_buffer:     [0.015, 0.02, 0.03]
+- breakout_buffer:      [0.0, 0.002, 0.005]
+
+Keep max_sep fixed initially unless you have reason to vary it.
+
+
+3) Scoring Objective (Out-of-Sample)
+------------------------------------
+Implement function:
+
+    def score_oos(trades_df, equity_df, objective: str, max_dd_limit: float) -> float
+
+Compute:
+- eq = compute_equity_metrics(equity_df)
+- tr = compute_trade_metrics(trades_df)
+
+Hard constraints:
+- If trades_df is empty: return -inf
+- If eq["max_drawdown_pct"] < -max_dd_limit: return -inf
+- If tr["trade_count"] < min_trades (e.g. 8 per test window): return -inf
+
+Objective options (v1):
+- "total_return"  -> eq["total_return_pct"]
+- "sharpe"        -> eq["sharpe_ratio"]
+- "expectancy_r"  -> tr["expectancy_r"]
+
+Recommended default:
+- objective = "total_return"
+- max_dd_limit = 0.12 (12%) for test windows (adjust later)
+
+
+4) Per-Window Optimization Flow
+-------------------------------
+For each walk-forward window:
+A) TRAIN PHASE
+- Slice price data to train range
+- Run scanner -> patterns_train, price_train
+- Generate signals -> signals_train
+- Backtest -> trades_train, equity_train
+NOTE: TRAIN phase is for parameter selection only.
+
+For each param set in grid:
+- run scanner/strategy/backtest on TRAIN slice using those params
+- compute score_train (same function, but allow looser dd, e.g. 0.18)
+- pick best params by highest score_train
+
+B) TEST PHASE
+- Slice price data to test range
+- Using the BEST params from training, run scanner/strategy/backtest on TEST slice
+- compute score_test and record metrics
+
+Record one row per window:
+- window_id
+- train_start/train_end/test_start/test_end
+- best_params_json
+- train_score
+- test_score
+- test_total_return_pct
+- test_max_dd_pct
+- test_sharpe
+- test_trade_count
+- test_expectancy_r
+- test_win_rate
+- test_profit_factor
+- test_forming_expectancy_r
+- test_confirmed_expectancy_r
+
+
+5) Stability Summary
+--------------------
+After all windows:
+- Count how often each param value appears in the selected best params.
+- Output a small text summary:
+    "low_tolerance winners: 0.03 (4), 0.04 (2), 0.05 (0)"
+This helps detect overfitting / instability.
+
+
+6) Outputs
+----------
+Write:
+- outputs/walkforward_results.csv
+- outputs/walkforward_best_params.json  (overall best on median/mean OOS score)
+
+Define "overall best" as:
+- choose the param set that maximizes MEAN test_score across windows
+  (or median to be robust)
+
+Also write:
+- outputs/walkforward_summary.txt  (stability summary + top-line OOS stats)
+
+
+7) CLI
+------
+In optimize.py implement argparse:
+
+python optimize.py
+  --symbols AAPL NVDA AMD
+  --train-bars 504
+  --test-bars 126
+  --step-bars 126
+  --objective total_return
+  --max-dd-train 0.18
+  --max-dd-test 0.12
+  --min-trades-test 8
+  --grid-size-limit 150   (optional guard)
+
+Optional:
+- --max-stocks N  (for broad universe mode)
+- --use-demo-universe (reuse your demo mode list)
+
+
+Acceptance Criteria
+-------------------
+A) Running optimize.py produces outputs:
+   - outputs/walkforward_results.csv
+   - outputs/walkforward_best_params.json
+   - outputs/walkforward_summary.txt
+
+B) Each window:
+   - selects best params on TRAIN
+   - evaluates those params on TEST
+   - stores both train_score and test_score
+
+C) The selected params are chosen by out-of-sample robustness, not a single backtest.
+
+D) Runtime is reasonable (grid is capped; demo symbols usable).
+
+
+Manual Test Plan
+----------------
+1) Quick test run:
+   python optimize.py --symbols AAPL NVDA AMD --train-bars 252 --test-bars 63 --step-bars 63 --objective total_return
+
+2) Confirm:
+   - CSV rows equal number of windows
+   - best_params_json populated per row
+   - summary file created
+
+3) Sanity checks:
+   - If all test_scores are negative/inf, loosen constraints or reduce grid.
+   - If best params vary wildly each window, strategy is unstable (expected early).
+
+
+Non-Goals
+---------
+- Bayesian optimization
+- Correlation/portfolio constraints
+- Live trading execution
+Those are later tasks.
