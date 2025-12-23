@@ -131,6 +131,15 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-23: No-Lookahead Backtester (Task 3)
+  - BacktestConfig with risk-based sizing (1% equity risk per trade)
+  - run_backtest() returns (trades_df, equity_df)
+  - Gap-aware exits: gap-through stop/target handled, conservative conflict resolution
+  - Slippage (5 bps) + commission applied to both entry and exit
+  - Trade blotter with: pattern_id, entry_kind, pnl_r_multiple, meta_json
+  - Daily equity curve with drawdown_pct
+  - Overlap control: one_position_per_symbol, max_positions
+  - No lookahead: uses prior close for position valuation during sizing
 - 2025-12-23: Strategy Signal Generation (Task 2)
   - TradeSignal now includes: pattern_id, entry_kind, trigger_level, risk_per_share, meta
   - generate_signals() supports both CONFIRMED and FORMING entry types
