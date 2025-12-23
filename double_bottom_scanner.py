@@ -435,7 +435,8 @@ def detect_double_bottom(df: pd.DataFrame, config: Dict) -> List[Dict]:
 # ============================================================================
 
 def scan_stocks(symbols: List[str], config: Dict, 
-                verbose: bool = True) -> pd.DataFrame:
+                verbose: bool = True,
+                return_price_data: bool = False):
     """
     Scan multiple stocks for double bottom patterns.
     
@@ -443,11 +444,14 @@ def scan_stocks(symbols: List[str], config: Dict,
         symbols: List of stock symbols to scan
         config: Configuration dictionary
         verbose: Whether to show progress bar
+        return_price_data: If True, also return price data dict
         
     Returns:
         DataFrame with all detected patterns
+        If return_price_data=True: Tuple of (DataFrame, Dict[str, DataFrame])
     """
     all_patterns = []
+    price_data = {}
     
     iterator = tqdm(symbols, desc="Scanning stocks") if verbose else symbols
     
@@ -460,6 +464,8 @@ def scan_stocks(symbols: List[str], config: Dict,
             
             lookback = min(config['lookback_days'], len(df))
             df_recent = df.iloc[-lookback:]
+            
+            price_data[symbol] = df_recent
             
             patterns = detect_double_bottom(df_recent, config)
             
@@ -476,6 +482,8 @@ def scan_stocks(symbols: List[str], config: Dict,
             continue
     
     if not all_patterns:
+        if return_price_data:
+            return pd.DataFrame(), price_data
         return pd.DataFrame()
     
     results_df = pd.DataFrame(all_patterns)
@@ -503,6 +511,8 @@ def scan_stocks(symbols: List[str], config: Dict,
         ascending=[False, False, False]
     )
     
+    if return_price_data:
+        return results_df, price_data
     return results_df
 
 
