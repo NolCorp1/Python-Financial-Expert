@@ -131,6 +131,13 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-23: Strategy Signal Generation (Task 2)
+  - TradeSignal now includes: pattern_id, entry_kind, trigger_level, risk_per_share, meta
+  - generate_signals() supports both CONFIRMED and FORMING entry types
+  - CONFIRMED: enter next bar open after neckline breakout close
+  - FORMING: enter next bar open after trigger level break (green candle required)
+  - Signal deduplication: one signal per pattern, CONFIRMED preferred
+  - scan_stocks() now has return_price_data option for shared data access
 - 2025-12-23: Pattern Output Hardening
   - Standardized status values to uppercase (FORMING/CONFIRMED)
   - Added pattern_id in SYMBOL_YYYYMMDD_STATUS format
