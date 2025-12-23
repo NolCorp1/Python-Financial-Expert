@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
     'confirmation_days': 10,          # Days to check for neckline breakout
     'download_years': 3,              # Years of historical data to download
     'rate_limit_delay': 0.1,          # Delay between API calls
+    'trigger_lookahead_days': 10,     # Days to look ahead for forming trigger level
 }
 
 
@@ -216,6 +217,66 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
         return 100 - (100 / (1 + rs))
 
 
+def compute_forming_trigger_level(
+    df: pd.DataFrame,
+    bottom2_pos: int,
+    trigger_lookahead_days: int = 10
+) -> Tuple[Optional[float], str]:
+    """
+    Compute forming trigger level for early entry logic.
+    
+    v1 rule: forming_trigger_level = max(High[bottom2_pos+1 : bottom2_pos+1+trigger_lookahead_days])
+    
+    Args:
+        df: DataFrame with OHLCV data
+        bottom2_pos: Index position of the second bottom
+        trigger_lookahead_days: Number of days to look ahead
+        
+    Returns:
+        Tuple of (forming_trigger_level, reason)
+    """
+    start = bottom2_pos + 1
+    end = min(bottom2_pos + 1 + trigger_lookahead_days, len(df))
+    
+    if start >= end:
+        return None, "insufficient_bars_after_bottom2"
+    
+    level = float(df["High"].iloc[start:end].max())
+    
+    if not (level > 0):
+        return None, "invalid_trigger_level"
+    
+    return round(level, 2), f"max_high_next_{end-start}_bars_after_bottom2"
+
+
+def find_breakout_date(
+    df: pd.DataFrame,
+    bottom2_pos: int,
+    neckline: float,
+    max_lookahead: int = 60
+) -> Optional[pd.Timestamp]:
+    """
+    Find the date when price first closed above the neckline after bottom2.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        bottom2_pos: Index position of the second bottom
+        neckline: Neckline price level
+        max_lookahead: Maximum bars to look ahead
+        
+    Returns:
+        Breakout date or None if not found
+    """
+    start = bottom2_pos + 1
+    end = min(bottom2_pos + 1 + max_lookahead, len(df))
+    
+    for idx in range(start, end):
+        if df['Close'].iloc[idx] > neckline:
+            return df.index[idx]
+    
+    return None
+
+
 def detect_double_bottom(df: pd.DataFrame, config: Dict) -> List[Dict]:
     """
     Detect double bottom patterns in stock price data.
@@ -301,23 +362,30 @@ def detect_double_bottom(df: pd.DataFrame, config: Dict) -> List[Dict]:
             rsi2 = rsi_values[idx2] if not np.isnan(rsi_values[idx2]) else 50
             rsi_divergence = (price2 <= price1 and rsi2 > rsi1)
             
-            status = 'forming'
+            status = 'FORMING'
+            breakout_date = None
             confirmation_end = min(idx2 + config['confirmation_days'], len(df) - 1)
             
             if confirmation_end > idx2:
                 post_bottom_highs = high_prices[idx2:confirmation_end + 1]
                 if np.any(post_bottom_highs > neckline):
-                    status = 'confirmed'
+                    status = 'CONFIRMED'
+                    breakout_date = find_breakout_date(df, idx2, neckline)
             
             pattern_height = neckline - avg_bottom
             target_price = neckline + pattern_height
+            
+            trigger_lookahead = config.get('trigger_lookahead_days', 10)
+            forming_trigger_level, forming_trigger_reason = compute_forming_trigger_level(
+                df, idx2, trigger_lookahead
+            )
             
             strength_score = 0
             strength_score += 25 if price_diff < 0.02 else (15 if price_diff < 0.03 else 5)
             strength_score += 25 if peak_height > 0.10 else (15 if peak_height > 0.07 else 5)
             strength_score += 20 if volume_decreased else 0
             strength_score += 20 if rsi_divergence else 0
-            strength_score += 10 if status == 'confirmed' else 0
+            strength_score += 10 if status == 'CONFIRMED' else 0
             
             pattern = {
                 'bottom1_date': dates[idx1],
@@ -331,13 +399,19 @@ def detect_double_bottom(df: pd.DataFrame, config: Dict) -> List[Dict]:
                 'bottom2_price': round(price2, 2),
                 'bottom2_idx': idx2,
                 'status': status,
+                'breakout_date': breakout_date,
                 'price_diff_pct': round(price_diff * 100, 2),
                 'peak_height_pct': round(peak_height * 100, 2),
                 'separation_days': separation,
+                'height': round(pattern_height, 2),
+                'avg_bottom': round(avg_bottom, 2),
                 'volume_confirmation': volume_decreased,
                 'rsi_divergence': rsi_divergence,
                 'target_price': round(target_price, 2),
+                'score': strength_score,
                 'strength_score': strength_score,
+                'forming_trigger_level': forming_trigger_level,
+                'forming_trigger_reason': forming_trigger_reason,
                 'current_price': round(close_prices[-1], 2),
             }
             
@@ -394,6 +468,9 @@ def scan_stocks(symbols: List[str], config: Dict,
             
             for pattern in patterns:
                 pattern['symbol'] = symbol
+                bottom2_date = pattern['bottom2_date']
+                date_str = pd.Timestamp(bottom2_date).strftime('%Y%m%d')
+                pattern['pattern_id'] = f"{symbol}_{date_str}_{pattern['status']}"
                 all_patterns.append(pattern)
             
             time.sleep(config['rate_limit_delay'])
@@ -407,21 +484,26 @@ def scan_stocks(symbols: List[str], config: Dict,
     results_df = pd.DataFrame(all_patterns)
     
     column_order = [
-        'symbol', 'status', 'strength_score',
+        'pattern_id', 'symbol', 'status', 'score', 'strength_score',
         'bottom1_date', 'bottom1_price',
-        'peak_date', 'neckline',
+        'peak_date', 'peak_price', 'neckline',
         'bottom2_date', 'bottom2_price',
+        'breakout_date',
         'current_price', 'target_price',
-        'price_diff_pct', 'peak_height_pct', 'separation_days',
+        'height', 'avg_bottom', 'separation_days',
+        'forming_trigger_level', 'forming_trigger_reason',
+        'price_diff_pct', 'peak_height_pct',
         'volume_confirmation', 'rsi_divergence',
+        'bottom1_idx', 'peak_idx', 'bottom2_idx',
     ]
     
     available_cols = [c for c in column_order if c in results_df.columns]
-    results_df = results_df[available_cols]
+    extra_cols = [c for c in results_df.columns if c not in column_order]
+    results_df = results_df[available_cols + extra_cols]
     
     results_df = results_df.sort_values(
-        ['status', 'strength_score', 'bottom2_date'],
-        ascending=[True, False, False]
+        ['status', 'score', 'bottom2_date'],
+        ascending=[False, False, False]
     )
     
     return results_df
@@ -461,8 +543,8 @@ def print_summary(df: pd.DataFrame):
     print("DOUBLE BOTTOM SCAN RESULTS")
     print("="*80)
     
-    confirmed = df[df['status'] == 'confirmed']
-    forming = df[df['status'] == 'forming']
+    confirmed = df[df['status'] == 'CONFIRMED']
+    forming = df[df['status'] == 'FORMING']
     
     print(f"\nTotal patterns found: {len(df)}")
     print(f"  - Confirmed: {len(confirmed)}")

@@ -1,0 +1,177 @@
+Task 1 — Pattern Output Hardening (Forming + Confirmed Metadata)
+==============================================================================
+Objective
+---------
+Make `double_bottom_scanner.py` produce strategy-ready pattern records for BOTH
+FORMING and CONFIRMED patterns with a consistent schema and deterministic IDs.
+
+This task does NOT change detection thresholds/logic materially; it only:
+- standardizes output fields
+- adds a "forming trigger level" used later for early-entry logic
+- ensures the scan CSV contains all required columns
+
+
+Files to Edit
+-------------
+- double_bottom_scanner.py
+
+
+Implementation Steps (Exact Edits)
+---------------------------------
+
+1) Add parameters for forming trigger computation
+------------------------------------------------
+In `DoubleBottomParams` (or your params/config area), add:
+
+- trigger_lookahead_days: int = 10
+
+If you do not have `DoubleBottomParams`, add a module-level constant instead:
+- DEFAULT_TRIGGER_LOOKAHEAD_DAYS = 10
+
+
+2) Ensure each pattern record includes required fields (schema hardening)
+-------------------------------------------------------------------------
+Locate the code where a pattern hit is constructed. In your current script,
+this is typically inside `detect_double_bottoms()` where you create a record
+(you may be using a dataclass like PatternHit and converting it to dict, or
+directly creating dict rows for a DataFrame).
+
+Ensure EVERY returned pattern record includes ALL of the following keys:
+
+REQUIRED KEYS
+- symbol: str
+- bottom1_date: pd.Timestamp
+- peak_date: pd.Timestamp
+- bottom2_date: pd.Timestamp
+- bottom1_price: float
+- peak_price: float
+- bottom2_price: float
+- neckline: float
+- status: str               # must be "FORMING" or "CONFIRMED"
+- breakout_date: Optional[pd.Timestamp]   # None for forming
+- target_price: float
+- height: float             # neckline - avg_bottom
+- avg_bottom: float         # (bottom1_price + bottom2_price)/2
+- separation_days: int      # trading bars between bottoms (i2 - i1)
+- score: float
+- pattern_id: str           # deterministic ID, see below
+- forming_trigger_level: Optional[float]
+- forming_trigger_reason: str
+
+DETERMINISTIC pattern_id FORMAT
+- pattern_id = f"{symbol}_{bottom2_date:%Y%m%d}_{status}"
+
+NOTES
+- `peak_price` and `neckline` may be the same number (that is OK), but keep both
+  fields for clarity and downstream compatibility.
+- `breakout_date` must exist as a key even if None/empty.
+- `forming_trigger_level` must exist as a key even if None/empty.
+
+
+3) Add forming trigger computation (v1)
+---------------------------------------
+After Bottom2 is identified (index i2 in the scan window), compute a simple,
+robust trigger level that can be used later for early entry.
+
+Definition (v1):
+- Use the maximum High over the next `trigger_lookahead_days` bars after Bottom2.
+- If there are not enough bars available, return None.
+
+Add this helper function to `double_bottom_scanner.py` (top-level, near other
+helpers). Make sure it works with your local df index/iloc usage.
+
+Add:
+
+    def compute_forming_trigger_level(
+        df: pd.DataFrame,
+        bottom2_pos: int,
+        trigger_lookahead_days: int = 10
+    ) -> tuple[float | None, str]:
+        """Return (forming_trigger_level, reason).
+
+        v1 rule:
+          forming_trigger_level = max(High[bottom2_pos+1 : bottom2_pos+1+trigger_lookahead_days])
+        """
+        start = bottom2_pos + 1
+        end = min(bottom2_pos + 1 + trigger_lookahead_days, len(df))
+        if start >= end:
+            return None, "insufficient_bars_after_bottom2"
+        level = float(df["High"].iloc[start:end].max())
+        if not (level > 0):
+            return None, "invalid_trigger_level"
+        return level, f"max_high_next_{end-start}_bars_after_bottom2"
+
+
+Then, when building each pattern record, set:
+
+- avg_bottom = (bottom1_price + bottom2_price) / 2.0
+- height = neckline - avg_bottom
+- separation_days = (i2 - i1)              # trading-bar separation
+- forming_trigger_level, forming_trigger_reason = compute_forming_trigger_level(...)
+
+IMPORTANT:
+- Always include forming_trigger_* fields, even for CONFIRMED patterns.
+  (They are still useful for analysis.)
+
+
+4) Ensure scan output CSV includes the schema columns
+-----------------------------------------------------
+Locate where you compile results into a DataFrame and write CSV. Ensure the
+DataFrame has columns for all required fields above.
+
+If you currently build a DataFrame from PatternHit dataclasses, convert each
+hit to a dict with ALL required keys (including None values).
+
+If you currently build a DataFrame from dict rows already, ensure each dict row
+includes the keys (even if None/empty string).
+
+If you have a `hits_to_dataframe()` function, update it so the output CSV
+contains:
+- pattern_id
+- status
+- forming_trigger_level
+- forming_trigger_reason
+- height
+- avg_bottom
+- separation_days
+- breakout_date
+
+
+Acceptance Criteria
+-------------------
+A) Running a scan produces a CSV where EACH row has:
+   - status in {"FORMING", "CONFIRMED"}
+   - pattern_id in the format: SYMBOL_YYYYMMDD_STATUS
+   - forming_trigger_level column present (may be blank/NaN when insufficient bars)
+   - breakout_date column present (blank/NaN for forming patterns)
+
+B) No runtime exceptions are introduced by these additions.
+
+C) Confirmed patterns still behave the same:
+   - breakout_date populated when confirmed
+
+D) Forming patterns still behave the same:
+   - breakout_date is None/empty
+   - status is "FORMING"
+
+
+Manual Test Commands
+--------------------
+1) Quick subset scan (no plotting):
+   python double_bottom_scanner.py --subset AAPL,AMD,NVDA,TSLA --out db_test.csv
+
+2) Verify required columns exist:
+   - Open db_test.csv
+   - Confirm columns: pattern_id, status, forming_trigger_level, forming_trigger_reason,
+     avg_bottom, height, separation_days, breakout_date
+
+3) Spot-check:
+   - Pick one FORMING row: breakout_date should be empty
+   - Pick one CONFIRMED row: breakout_date should be populated (if your data has confirmed hits)
+
+
+Notes / Non-Goals
+-----------------
+- Do NOT change threshold defaults or detection heuristics beyond what is needed
+  to compute trigger_level fields.
+- Do NOT implement entry/exit logic here. That is Task 2.
