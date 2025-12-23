@@ -105,14 +105,21 @@ python main.py --backtest --max-stocks 50 \
 
 ## Output Format
 The CSV contains:
+- pattern_id: Unique identifier (SYMBOL_YYYYMMDD_STATUS format)
 - symbol: Stock ticker
-- status: 'confirmed' or 'forming'
+- status: 'FORMING' or 'CONFIRMED' (uppercase)
 - strength_score: Pattern quality (0-100)
 - bottom1_date, bottom1_price: First bottom details
 - peak_date, neckline: Peak/neckline details
 - bottom2_date, bottom2_price: Second bottom details
+- breakout_date: Date when price closed above neckline (CONFIRMED only)
 - current_price: Latest close price
 - target_price: Projected price target (neckline + pattern height)
+- height: Pattern height (neckline - avg_bottom)
+- avg_bottom: Average of both bottom prices
+- separation_days: Trading days between bottoms
+- forming_trigger_level: Price level that would confirm FORMING patterns
+- forming_trigger_reason: How trigger level was computed
 
 ## Dependencies
 - yfinance: Stock data download
@@ -124,6 +131,12 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-23: Pattern Output Hardening
+  - Standardized status values to uppercase (FORMING/CONFIRMED)
+  - Added pattern_id in SYMBOL_YYYYMMDD_STATUS format
+  - Added new fields: height, avg_bottom, separation_days, forming_trigger_level
+  - CONFIRMED patterns now always have breakout_date populated
+  - Aligned confirmation logic with closing breakout detection
 - 2025-12-23: Added complete backtesting strategy system
   - Created strategy.py with TradeSignal dataclass and generate_signals()
   - Created backtester.py with Backtest class for bar-by-bar simulation
