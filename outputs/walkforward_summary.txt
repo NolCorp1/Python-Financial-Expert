@@ -1,9 +1,10 @@
 WALK-FORWARD OPTIMIZATION SUMMARY
 ========================================
 Windows: 8
-Valid test windows: 1
-Mean test score: 0.84
-Median test score: 0.84
+Valid test windows (any trades): 4
+Quality test windows (min trades met): 1
+Mean test score: 0.51
+Median test score: 0.53
 
 OVERALL BEST PARAMETERS (by mean OOS score):
 {
@@ -15,7 +16,7 @@ OVERALL BEST PARAMETERS (by mean OOS score):
   "neckline_min_rise": 0.06,
   "stop_loss_buffer": 0.015
 }
-Mean OOS score: 0.84
+Mean OOS score: 0.51
 
 PARAMETER STABILITY SUMMARY
 ========================================

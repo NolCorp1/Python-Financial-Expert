@@ -208,8 +208,9 @@ def score_oos(
     equity_df: pd.DataFrame,
     objective: str = 'total_return',
     max_dd_limit: float = 0.12,
-    min_trades: int = 8
-) -> float:
+    min_trades: int = 2,
+    require_min_trades: bool = True
+) -> Tuple[float, bool]:
     """
     Score out-of-sample performance with constraints.
     
@@ -218,38 +219,42 @@ def score_oos(
         equity_df: Equity DataFrame
         objective: Scoring objective ('total_return', 'sharpe', 'expectancy_r')
         max_dd_limit: Maximum allowed drawdown (positive, e.g., 0.12 = 12%)
-        min_trades: Minimum trades required
+        min_trades: Minimum trades for quality threshold
+        require_min_trades: If True, return -inf for < min_trades; if False, return score anyway
         
     Returns:
-        Score (float), or -inf if constraints violated
+        Tuple of (score, meets_quality) where meets_quality indicates trade count threshold met
     """
     if trades_df.empty or equity_df.empty:
-        return float('-inf')
+        return float('-inf'), False
     
     tr = compute_trade_metrics(trades_df)
     eq = compute_equity_metrics(equity_df)
     
-    if tr['trade_count'] < min_trades:
-        return float('-inf')
+    trade_count = tr['trade_count']
+    meets_quality = trade_count >= min_trades
     
     max_dd_pct = abs(eq.get('max_drawdown_pct', 0))
     if max_dd_pct > max_dd_limit * 100:
-        return float('-inf')
+        return float('-inf'), False
     
     if objective == 'total_return':
         score = eq.get('total_return_pct', 0)
     elif objective == 'sharpe':
         score = eq.get('sharpe_ratio', 0)
         if np.isnan(score):
-            score = float('-inf')
+            score = 0.0
     elif objective == 'expectancy_r':
         score = tr.get('expectancy_r', 0)
         if np.isnan(score):
-            score = float('-inf')
+            score = 0.0
     else:
         score = eq.get('total_return_pct', 0)
     
-    return score
+    if require_min_trades and not meets_quality:
+        return float('-inf'), False
+    
+    return score, meets_quality
 
 
 def run_window_optimization(
@@ -307,11 +312,12 @@ def run_window_optimization(
     for params in iterator:
         trades_df, equity_df = run_scan_and_backtest(train_data, params, backtest_cfg)
         
-        score = score_oos(
+        score, _ = score_oos(
             trades_df, equity_df,
             objective=objective,
             max_dd_limit=max_dd_train,
-            min_trades=4
+            min_trades=2,
+            require_min_trades=True
         )
         
         if score > best_train_score:
@@ -332,11 +338,12 @@ def run_window_optimization(
     
     test_trades, test_equity = run_scan_and_backtest(test_data, best_params, backtest_cfg)
     
-    test_score = score_oos(
+    test_score, test_quality = score_oos(
         test_trades, test_equity,
         objective=objective,
         max_dd_limit=max_dd_test,
-        min_trades=min_trades_test
+        min_trades=min_trades_test,
+        require_min_trades=False
     )
     
     tr = compute_trade_metrics(test_trades) if not test_trades.empty else {}
@@ -351,6 +358,7 @@ def run_window_optimization(
         'best_params': best_params,
         'train_score': best_train_score,
         'test_score': test_score,
+        'test_quality': test_quality,
         'test_total_return_pct': eq.get('total_return_pct', np.nan),
         'test_max_dd_pct': eq.get('max_drawdown_pct', np.nan),
         'test_sharpe': eq.get('sharpe_ratio', np.nan),
@@ -573,6 +581,7 @@ def run_walkforward_optimization(
     best_params, best_mean_score = find_overall_best_params(window_results)
     
     valid_test_scores = [r['test_score'] for r in window_results if r['test_score'] != float('-inf')]
+    quality_test_scores = [r['test_score'] for r in window_results if r.get('test_quality', False)]
     mean_test_score = np.mean(valid_test_scores) if valid_test_scores else float('nan')
     median_test_score = np.median(valid_test_scores) if valid_test_scores else float('nan')
     
@@ -580,7 +589,8 @@ def run_walkforward_optimization(
         "WALK-FORWARD OPTIMIZATION SUMMARY",
         "=" * 40,
         f"Windows: {len(windows)}",
-        f"Valid test windows: {len(valid_test_scores)}",
+        f"Valid test windows (any trades): {len(valid_test_scores)}",
+        f"Quality test windows (min trades met): {len(quality_test_scores)}",
         f"Mean test score: {mean_test_score:.2f}",
         f"Median test score: {median_test_score:.2f}",
         "",

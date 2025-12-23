@@ -131,6 +131,13 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-23: Walk-Forward Optimization (Task 5)
+  - optimize.py with rolling train/test windows
+  - Parameter grid search (~50-150 combinations)
+  - OOS scoring with drawdown constraints
+  - Stability summary tracking which params win most often
+  - Outputs: walkforward_results.csv, walkforward_best_params.json, walkforward_summary.txt
+  - CLI: python optimize.py --symbols AAPL NVDA AMD --train-bars 504 --test-bars 126
 - 2025-12-23: Metrics & Diagnostics (Task 4)
   - enrich_trades() adds derived columns (win, abs_r, capped_r, year, month)
   - compute_trade_metrics() for core stats (win_rate, expectancy, profit_factor)
