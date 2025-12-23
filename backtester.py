@@ -23,6 +23,24 @@ import math
 from strategy import TradeSignal
 
 
+def _convert_to_serializable(obj):
+    """Convert numpy types to Python native types for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: _convert_to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_to_serializable(v) for v in obj]
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    elif isinstance(obj, (np.floating,)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (pd.Timestamp, datetime)):
+        return obj.isoformat()
+    else:
+        return obj
+
+
 @dataclass
 class BacktestConfig:
     """Configuration for backtesting parameters."""
@@ -177,7 +195,7 @@ def run_backtest(
                 'hold_days': hold_days,
                 'slippage_bps': pos.slippage_bps,
                 'commissions': round(pos.entry_commission + exit_commission, 2),
-                'meta_json': json.dumps(pos.meta) if pos.meta else '{}'
+                'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
             }
             completed_trades.append(trade_record)
             
@@ -322,7 +340,7 @@ def run_backtest(
                     'hold_days': hold_days,
                     'slippage_bps': pos.slippage_bps,
                     'commissions': round(pos.entry_commission + exit_commission, 2),
-                    'meta_json': json.dumps(pos.meta) if pos.meta else '{}'
+                    'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
                 }
                 completed_trades.append(trade_record)
     

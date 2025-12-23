@@ -1,0 +1,9 @@
+{
+  "breakout_buffer": 0.0,
+  "forming_lookahead_days": 10,
+  "low_tolerance": 0.03,
+  "max_sep": 260,
+  "min_sep": 20,
+  "neckline_min_rise": 0.06,
+  "stop_loss_buffer": 0.015
+}

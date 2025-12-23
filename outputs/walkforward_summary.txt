@@ -1,0 +1,28 @@
+WALK-FORWARD OPTIMIZATION SUMMARY
+========================================
+Windows: 8
+Valid test windows: 1
+Mean test score: 0.84
+Median test score: 0.84
+
+OVERALL BEST PARAMETERS (by mean OOS score):
+{
+  "breakout_buffer": 0.0,
+  "forming_lookahead_days": 10,
+  "low_tolerance": 0.03,
+  "max_sep": 260,
+  "min_sep": 20,
+  "neckline_min_rise": 0.06,
+  "stop_loss_buffer": 0.015
+}
+Mean OOS score: 0.84
+
+PARAMETER STABILITY SUMMARY
+========================================
+breakout_buffer: 0.0 (8)
+forming_lookahead_days: 10 (8)
+low_tolerance: 0.03 (8)
+max_sep: 260 (8)
+min_sep: 20 (8)
+neckline_min_rise: 0.06 (8)
+stop_loss_buffer: 0.015 (8)
