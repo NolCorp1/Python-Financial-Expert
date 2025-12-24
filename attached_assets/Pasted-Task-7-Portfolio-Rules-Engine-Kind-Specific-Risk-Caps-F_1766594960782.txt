@@ -1,0 +1,193 @@
+Task 7 — Portfolio Rules Engine (Kind-Specific Risk, Caps, FORMING Time/No-Progress Exits)
+=========================================================================================
+Objective
+---------
+Reduce drawdown and improve risk-adjusted returns by:
+1) Applying different risk budgets to FORMING vs CONFIRMED trades
+2) Capping concurrent FORMING exposure (variance control)
+3) Adding FORMING-specific "no-progress" + time exits to stop capital bleed
+4) (Optional) Adding CONFIRMED stop-to-breakeven after +0.5R (raise avg R)
+
+This task changes portfolio/risk + trade management only.
+NO pattern detection changes.
+
+Files to Edit
+-------------
+- backtester.py
+- main.py (add CLI flags to tune without code edits)
+
+Why This Matters (based on your results)
+----------------------------------------
+- FORMING: 46.6% win, +0.16R expectancy, longer holds -> high variance + DD driver
+- CONFIRMED: 70.7% win, +0.05R expectancy, short holds -> high hit rate, low R capture
+
+So we:
+- size FORMING smaller + cap it
+- force FORMING to "prove itself" early or exit
+- optionally let CONFIRMED wins run a bit more via BE stop
+
+1) Extend BacktestConfig
+------------------------
+In backtester.py add fields to BacktestConfig:
+
+# Kind-specific risk sizing
+- risk_fraction_confirmed: float = 0.010     # 1.0% equity risk per trade
+- risk_fraction_forming: float = 0.006       # 0.6% equity risk per trade (start)
+
+# Portfolio caps
+- max_positions_total: int = 10
+- max_positions_forming: int = 3
+- max_positions_confirmed: int = 10          # optional, usually same as total
+
+# FORMING management rules
+- forming_max_hold_days: int = 60
+- forming_no_progress_days: int = 20
+- forming_no_progress_r: float = 0.50
+- forming_no_progress_action: str = "EXIT"   # "EXIT" or "TIGHTEN_STOP"
+- forming_tighten_stop_to_r: float = -0.25   # only used if action == TIGHTEN_STOP
+
+# CONFIRMED optional enhancement (v1.5)
+- confirmed_move_stop_to_be_at_r: float = 0.50   # set 0 to disable
+
+Keep existing frictions fields (slippage/commission) unchanged.
+
+2) Add Counters for Skip Reasons
+--------------------------------
+Inside run_backtest(), track and print at end:
+- skipped_max_total
+- skipped_max_forming
+- skipped_max_confirmed
+- skipped_symbol_already_open
+- skipped_invalid_sizing
+
+This helps prove caps are working.
+
+3) Entry Acceptance: Apply Caps BEFORE Sizing
+---------------------------------------------
+Before sizing a new trade:
+- open_total = len(open_positions)
+- open_forming = count where pos.entry_kind == "FORMING"
+- open_confirmed = count where pos.entry_kind == "CONFIRMED"
+
+Rules:
+- if open_total >= cfg.max_positions_total: skip (skipped_max_total++)
+- if signal.entry_kind == "FORMING" and open_forming >= cfg.max_positions_forming: skip (skipped_max_forming++)
+- if signal.entry_kind == "CONFIRMED" and open_confirmed >= cfg.max_positions_confirmed: skip (skipped_max_confirmed++)
+- if cfg.one_position_per_symbol and symbol already open: skip (skipped_symbol_already_open++)
+
+4) Kind-Specific Position Sizing (Risk-Based)
+---------------------------------------------
+When sizing shares, choose risk fraction by kind:
+
+- rf = cfg.risk_fraction_confirmed if entry_kind=="CONFIRMED" else cfg.risk_fraction_forming
+- risk_budget = rf * current_equity
+- shares = floor(risk_budget / stop_dist)
+
+Everything else remains identical.
+If stop_dist <= 0 or shares < 1 -> skip (skipped_invalid_sizing++)
+
+5) Track MFE (Max Favorable Excursion) in R Units
+-------------------------------------------------
+For each open position, maintain:
+- bars_held
+- mfe_r (max favorable excursion in R)
+
+Per day:
+- bars_held += 1
+- mfe_r = max(mfe_r, (today_high - entry_price) / (entry_price - stop_loss))
+
+Guard denominator > 0.
+
+6) FORMING Exit Rules (Required)
+--------------------------------
+For positions with entry_kind == "FORMING":
+
+A) TIME STOP
+- If bars_held >= cfg.forming_max_hold_days:
+    exit at today's OPEN (gap-aware + slippage) with exit_reason="TIME"
+
+B) NO-PROGRESS RULE
+- If bars_held >= cfg.forming_no_progress_days AND mfe_r < cfg.forming_no_progress_r:
+    If action == "EXIT":
+        exit at today's OPEN (gap-aware + slippage) with exit_reason="NO_PROGRESS"
+    If action == "TIGHTEN_STOP":
+        new_stop = entry_price + cfg.forming_tighten_stop_to_r * (entry_price - original_stop)
+        stop_loss = max(stop_loss, new_stop)
+        (Do this once; store a flag like tightened=True.)
+
+IMPORTANT:
+- Apply these checks BEFORE the normal intraday stop/target checks for that day
+  (but after checking for gap exits is acceptable if your code structure requires it).
+- TIME/NO_PROGRESS exits should be realistic: use OPEN with exit slippage.
+
+7) CONFIRMED Optional: Move Stop to Breakeven at +0.5R (Recommended)
+--------------------------------------------------------------------
+For positions with entry_kind == "CONFIRMED":
+- If cfg.confirmed_move_stop_to_be_at_r > 0 and mfe_r >= threshold:
+    stop_loss = max(stop_loss, entry_price)
+
+This tends to increase avg R / reduce givebacks.
+
+8) Output/Compatibility
+-----------------------
+Ensure trades_df exit_reason includes:
+- "NO_PROGRESS"
+- "TIME"
+in addition to STOP/TARGET/etc.
+
+Metrics output should now reflect:
+- Lower max drawdown
+- FORMING hold days reduced
+- FORMING trade count reduced (due to caps/no-progress), but expectancy should improve
+
+9) CLI Flags (main.py)
+----------------------
+Expose these args in main.py so tuning is easy:
+
+- --risk-confirmed 0.01
+- --risk-forming 0.006
+- --max-positions-total 10
+- --max-positions-forming 3
+- --forming-max-hold-days 60
+- --forming-no-progress-days 20
+- --forming-no-progress-r 0.5
+- --forming-no-progress-action EXIT|TIGHTEN_STOP
+- --confirmed-move-stop-to-be-at-r 0.5
+
+Wire them to BacktestConfig.
+
+Acceptance Criteria
+-------------------
+A) Backtest runs successfully on NASDAQ universe subset and produces trades/equity CSVs
+B) Caps are enforced:
+   - FORMING open positions never exceed max_positions_forming
+C) FORMING exits appear with exit_reason TIME and NO_PROGRESS
+D) Drawdown improves from baseline (-13.01% on 50-stock test)
+E) Returns remain similar or improve, and FORMING expectancy ideally increases
+
+Manual Test Plan
+----------------
+1) Baseline (record stats):
+   python main.py --universe nasdaq --max-stocks 50 --backtest-v2
+
+2) Run with Task 7 defaults:
+   python main.py --universe nasdaq --max-stocks 50 --backtest-v2 --max-positions-forming 3 --risk-forming 0.006
+
+3) Stress tests:
+   - Tight cap:
+     --max-positions-forming 2
+   - No-progress earlier:
+     --forming-no-progress-days 15
+   - Tighten stop instead of exit:
+     --forming-no-progress-action TIGHTEN_STOP
+
+Compare:
+- max DD
+- total return
+- FORMING/CONFIRMED expectancy and hold days
+
+Non-Goals
+---------
+- Partial profit taking (that is Task 8)
+- Sector/correlation caps (later)
+- Walk-forward optimization including these portfolio rules (Task 9)
