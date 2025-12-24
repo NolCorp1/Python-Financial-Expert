@@ -430,6 +430,27 @@ def main():
     parser.add_argument('--confirmed-move-stop-to-be-at-r', type=float, default=0.5,
                        help='Move CONFIRMED stop to BE at this MFE (0 to disable)')
     
+    parser.add_argument('--confirmed-partial-tp-enabled', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Enable partial take profit for CONFIRMED trades')
+    parser.add_argument('--confirmed-partial-tp-at-r', type=float, default=1.0,
+                       help='Take partial profit at this R-multiple')
+    parser.add_argument('--confirmed-partial-tp-fraction', type=float, default=0.5,
+                       help='Fraction of position to sell at partial TP (0.5 = 50%%)')
+    
+    parser.add_argument('--confirmed-trailing-enabled', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Enable trailing stop for CONFIRMED trades')
+    parser.add_argument('--confirmed-trailing-start-r', type=float, default=1.0,
+                       help='Start trailing after reaching this R-multiple')
+    parser.add_argument('--confirmed-trailing-atr-mult', type=float, default=2.0,
+                       help='ATR multiplier for trailing stop distance')
+    parser.add_argument('--atr-length', type=int, default=14,
+                       help='ATR calculation period')
+    
+    parser.add_argument('--forming-tighten-stop-to-r', type=float, default=-0.25,
+                       help='R-multiple to tighten FORMING stop to when no-progress-action is TIGHTEN_STOP')
+    
     args = parser.parse_args()
     
     config = DEFAULT_CONFIG.copy()
@@ -561,7 +582,15 @@ def main():
             forming_no_progress_days=args.forming_no_progress_days,
             forming_no_progress_r=args.forming_no_progress_r,
             forming_no_progress_action=args.forming_no_progress_action,
-            confirmed_move_stop_to_be_at_r=args.confirmed_move_stop_to_be_at_r
+            forming_tighten_stop_to_r=args.forming_tighten_stop_to_r,
+            confirmed_move_stop_to_be_at_r=args.confirmed_move_stop_to_be_at_r,
+            confirmed_partial_tp_enabled=args.confirmed_partial_tp_enabled.lower() == 'true',
+            confirmed_partial_tp_at_r=args.confirmed_partial_tp_at_r,
+            confirmed_partial_tp_fraction=args.confirmed_partial_tp_fraction,
+            confirmed_trailing_enabled=args.confirmed_trailing_enabled.lower() == 'true',
+            confirmed_trailing_start_r=args.confirmed_trailing_start_r,
+            confirmed_trailing_atr_mult=args.confirmed_trailing_atr_mult,
+            atr_length=args.atr_length
         )
         
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)

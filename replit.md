@@ -131,6 +131,13 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-24: Exit Upgrades (Task 8)
+  - CONFIRMED partial take profit: sell 50% at +1R, continue with remainder
+  - ATR-based trailing stop: 2x ATR distance, activates after +1R or partial TP
+  - FORMING TIGHTEN_STOP mode: alternative to EXIT for no-progress rule
+  - New CLI flags: --confirmed-partial-tp-enabled, --confirmed-trailing-enabled, etc.
+  - No-lookahead: trailing uses prior day close/ATR, partial TP uses current day OHLC
+  - Results: marginal improvement with partial TP (7.62% vs 7.61% baseline)
 - 2025-12-24: Portfolio Rules Engine (Task 7)
   - Kind-specific risk: CONFIRMED 1% vs FORMING 0.6% per trade
   - Position caps: max 3 concurrent FORMING positions, 10 total

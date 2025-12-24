@@ -68,6 +68,15 @@ class BacktestConfig:
     forming_tighten_stop_to_r: float = -0.25
     
     confirmed_move_stop_to_be_at_r: float = 0.50
+    
+    confirmed_partial_tp_enabled: bool = True
+    confirmed_partial_tp_at_r: float = 1.00
+    confirmed_partial_tp_fraction: float = 0.50
+    
+    confirmed_trailing_enabled: bool = True
+    confirmed_trailing_start_r: float = 1.00
+    confirmed_trailing_atr_mult: float = 2.0
+    atr_length: int = 14
 
 
 @dataclass
@@ -89,6 +98,12 @@ class OpenPosition:
     mfe_r: float = 0.0
     tightened: bool = False
     moved_to_be: bool = False
+    shares_initial: int = 0
+    shares_remaining: int = 0
+    partial_tp_done: bool = False
+    partial_tp_date: Optional[pd.Timestamp] = None
+    realized_pnl_dollars: float = 0.0
+    trailing_active: bool = False
 
 
 def group_signals_by_symbol(signals: List[TradeSignal]) -> Dict[str, List[TradeSignal]]:
@@ -101,6 +116,32 @@ def group_signals_by_symbol(signals: List[TradeSignal]) -> Dict[str, List[TradeS
     for sym in result:
         result[sym].sort(key=lambda s: s.entry_date)
     return result
+
+
+def compute_atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    """
+    Compute Average True Range (ATR) for a price DataFrame.
+    
+    Args:
+        df: DataFrame with 'High', 'Low', 'Close' columns
+        length: ATR period (default 14)
+        
+    Returns:
+        Series with ATR values aligned to df index
+    """
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    prev_close = close.shift(1)
+    
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=length, min_periods=1).mean()
+    
+    return atr
 
 
 def run_backtest(
@@ -133,6 +174,10 @@ def run_backtest(
     skipped_symbol_already_open = 0
     skipped_invalid_sizing = 0
     
+    atr_by_symbol: Dict[str, pd.Series] = {}
+    for sym, df in price_data_by_symbol.items():
+        atr_by_symbol[sym] = compute_atr(df, cfg.atr_length)
+    
     all_signals = []
     for sym, sigs in signals_by_symbol.items():
         for sig in sigs:
@@ -155,12 +200,14 @@ def run_backtest(
         """Helper to create trade record and update cash."""
         nonlocal cash
         exit_commission = cfg.commission_per_trade
-        proceeds = exit_price * pos.shares - exit_commission
+        proceeds = exit_price * pos.shares_remaining - exit_commission
         cash += proceeds
         
-        pnl_dollars = (exit_price - pos.entry_fill) * pos.shares - pos.entry_commission - exit_commission
-        risk_amount = (pos.entry_fill - pos.original_stop_loss) * pos.shares
-        pnl_r_multiple = pnl_dollars / risk_amount if risk_amount > 0 else 0.0
+        final_leg_pnl = (exit_price - pos.entry_fill) * pos.shares_remaining - exit_commission
+        total_pnl_dollars = pos.realized_pnl_dollars + final_leg_pnl - pos.entry_commission
+        
+        risk_amount = (pos.entry_fill - pos.original_stop_loss) * pos.shares_initial
+        pnl_r_multiple = total_pnl_dollars / risk_amount if risk_amount > 0 else 0.0
         hold_days = (exit_date - pos.entry_date).days
         
         return {
@@ -172,17 +219,18 @@ def run_backtest(
             'stop_loss': round(pos.stop_loss, 2),
             'original_stop_loss': round(pos.original_stop_loss, 2),
             'take_profit': round(pos.take_profit, 2),
-            'shares': pos.shares,
+            'shares': pos.shares_initial,
             'exit_date': exit_date,
             'exit_price': round(exit_price, 2),
             'exit_reason': exit_reason,
-            'pnl_dollars': round(pnl_dollars, 2),
+            'pnl_dollars': round(total_pnl_dollars, 2),
             'pnl_r_multiple': round(pnl_r_multiple, 2),
             'hold_days': hold_days,
             'bars_held': pos.bars_held,
             'mfe_r': round(pos.mfe_r, 2),
             'slippage_bps': pos.slippage_bps,
             'commissions': round(pos.entry_commission + exit_commission, 2),
+            'partial_tp_done': pos.partial_tp_done,
             'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
         }
     
@@ -203,6 +251,25 @@ def run_backtest(
             open_price = bar['Open']
             high_price = bar['High']
             low_price = bar['Low']
+            close_price = bar['Close']
+            
+            prior_close = None
+            prior_atr = None
+            df_before = df[df.index < current_date]
+            if len(df_before) > 0:
+                prior_close = df_before['Close'].iloc[-1]
+                if sym in atr_by_symbol:
+                    atr_series = atr_by_symbol[sym]
+                    prior_date = df_before.index[-1]
+                    if prior_date in atr_series.index:
+                        prior_atr = atr_series.loc[prior_date]
+            
+            if pos.entry_kind == "CONFIRMED" and cfg.confirmed_trailing_enabled and prior_close is not None and prior_atr is not None:
+                trailing_start_ok = pos.mfe_r >= cfg.confirmed_trailing_start_r or pos.partial_tp_done
+                if trailing_start_ok:
+                    pos.trailing_active = True
+                    trail_stop_candidate = prior_close - cfg.confirmed_trailing_atr_mult * prior_atr
+                    pos.stop_loss = max(pos.stop_loss, trail_stop_candidate)
             
             pos.bars_held += 1
             
@@ -233,11 +300,35 @@ def run_backtest(
                     if pos.mfe_r >= cfg.confirmed_move_stop_to_be_at_r and not pos.moved_to_be:
                         pos.stop_loss = max(pos.stop_loss, pos.entry_fill)
                         pos.moved_to_be = True
+                
+                if pos.entry_kind == "CONFIRMED" and cfg.confirmed_partial_tp_enabled and not pos.partial_tp_done:
+                    stop_dist_orig = pos.entry_fill - pos.original_stop_loss
+                    partial_tp_level = pos.entry_fill + cfg.confirmed_partial_tp_at_r * stop_dist_orig
+                    
+                    partial_fill_price = None
+                    if open_price >= partial_tp_level:
+                        partial_fill_price = open_price * (1 - cfg.slippage_bps / 10000)
+                    elif high_price >= partial_tp_level:
+                        partial_fill_price = partial_tp_level * (1 - cfg.slippage_bps / 10000)
+                    
+                    if partial_fill_price is not None:
+                        shares_to_sell = int(math.floor(pos.shares_initial * cfg.confirmed_partial_tp_fraction))
+                        shares_to_sell = max(1, min(shares_to_sell, pos.shares_remaining - 1))
+                        
+                        if shares_to_sell > 0 and pos.shares_remaining > 1:
+                            partial_pnl = (partial_fill_price - pos.entry_fill) * shares_to_sell - cfg.commission_per_trade
+                            pos.realized_pnl_dollars += partial_pnl
+                            pos.shares_remaining -= shares_to_sell
+                            pos.partial_tp_done = True
+                            pos.partial_tp_date = current_date
+                            cash += partial_fill_price * shares_to_sell - cfg.commission_per_trade
             
             if exit_price is None:
                 if open_price <= pos.stop_loss:
                     exit_price = open_price * (1 - cfg.slippage_bps / 10000)
                     exit_reason = "STOP"
+                elif pos.shares_remaining <= 0:
+                    continue
                 elif open_price >= pos.take_profit:
                     exit_price = open_price * (1 - cfg.slippage_bps / 10000)
                     exit_reason = "TARGET"
@@ -252,7 +343,7 @@ def run_backtest(
                     exit_reason = "TARGET"
                 elif cfg.max_hold_days is not None:
                     if pos.bars_held >= cfg.max_hold_days:
-                        exit_price = bar['Close'] * (1 - cfg.slippage_bps / 10000)
+                        exit_price = close_price * (1 - cfg.slippage_bps / 10000)
                         exit_reason = "TIME"
             
             if exit_price is not None:
@@ -334,7 +425,7 @@ def run_backtest(
                 continue
             
             current_equity = cash + sum(
-                pos.shares * _get_prior_close(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)
+                pos.shares_remaining * _get_prior_close(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)
                 for pos in open_positions.values()
             )
             
@@ -374,14 +465,16 @@ def run_backtest(
                 shares=shares,
                 entry_commission=entry_commission,
                 slippage_bps=cfg.slippage_bps,
-                meta=signal.meta if hasattr(signal, 'meta') else {}
+                meta=signal.meta if hasattr(signal, 'meta') else {},
+                shares_initial=shares,
+                shares_remaining=shares
             )
             open_positions[sym] = position
             
             signal_idx += 1
         
         open_value = sum(
-            pos.shares * _get_price(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)
+            pos.shares_remaining * _get_price(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)
             for pos in open_positions.values()
         )
         total_equity = cash + open_value

@@ -1,0 +1,241 @@
+Task 8 — Exit Upgrades (Partial TP + Trailing + FORMING No-Progress Variant)
+==============================================================================
+Objective
+---------
+Increase total return while keeping drawdown controlled by improving trade management:
+1) Add partial take-profit (TP) on CONFIRMED trades to increase realized R
+2) Add trailing stop logic AFTER partial TP or after reaching a profit threshold
+3) Add a more nuanced FORMING no-progress option (tighten stop instead of always exiting)
+4) Ensure no-lookahead: management decisions must only use information available up to prior bar
+
+Files to Edit
+-------------
+- backtester.py
+- main.py (add CLI flags)
+
+Current Baseline (Task 7)
+-------------------------
+- CONFIRMED: move stop to BE at +0.5R MFE
+- FORMING: NO_PROGRESS exits if MFE < +0.5R at day 20
+- FORMING cap and lower risk in place
+
+Task 8 Focus
+------------
+Your Task 7 reduced DD a lot but also reduced return.
+Most likely sources:
+- FORMING exits cut long winners (by design)
+- CONFIRMED BE stops cut winners early or prevent full measured move capture
+We’ll fix return capture via partial TP and controlled trailing.
+
+Key Rule: NO LOOKAHEAD
+----------------------
+Any new management rule must use:
+- prior day's state (mfe_r up to yesterday)
+- today's OPEN for management exits/partial fills
+- and today's OHLC for stop/target fills
+Do NOT use today's HIGH to decide a management action that happens at today's OPEN.
+
+
+1) Extend BacktestConfig with Exit Upgrade Flags
+------------------------------------------------
+Add to BacktestConfig in backtester.py:
+
+# CONFIRMED partial TP
+- confirmed_partial_tp_enabled: bool = True
+- confirmed_partial_tp_at_r: float = 1.00        # take partial at +1R
+- confirmed_partial_tp_fraction: float = 0.50    # sell 50% of shares
+
+# CONFIRMED trailing stop (after partial or after threshold)
+- confirmed_trailing_enabled: bool = True
+- confirmed_trailing_start_r: float = 1.00       # start trailing after +1R reached
+- confirmed_trailing_atr_mult: float = 2.0       # trailing distance in ATR units
+- atr_length: int = 14
+
+# FORMING no-progress alternative
+- forming_no_progress_action: str = "EXIT"       # already exists; support "TIGHTEN_STOP"
+- forming_tighten_stop_to_r: float = -0.25       # already exists
+
+NOTE:
+- Trailing uses ATR; compute ATR per symbol from its OHLCV dataframe.
+- If you want simpler v1, you can trail by R instead of ATR; ATR is preferred.
+
+
+2) Track Position State Needed for Partial TP
+---------------------------------------------
+In the open position structure, add fields:
+- shares_initial
+- shares_remaining
+- partial_tp_done: bool
+- partial_tp_date: Optional[pd.Timestamp]
+- realized_pnl_dollars: float  (accumulate partial exits)
+- stop_loss_current: float     (already exists, but ensure mutable)
+- original_stop_loss: float
+- original_risk_per_share: float = entry_price - original_stop_loss
+
+Ensure:
+- pnl for final trade includes realized_pnl_dollars + final leg pnl.
+
+
+3) Implement ATR Computation (Per Symbol)
+-----------------------------------------
+Add helper in backtester.py:
+
+    def compute_atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
+        tr = max(
+          high-low,
+          abs(high-prev_close),
+          abs(low-prev_close)
+        )
+        atr = tr.rolling(length).mean()
+        return atr
+
+Precompute ATR series for each symbol once and store in dict:
+- atr_by_symbol[symbol] = atr_series
+
+
+4) CONFIRMED Partial Take Profit (Required)
+-------------------------------------------
+Rule:
+- Only for entry_kind == "CONFIRMED"
+- Trigger when price reaches entry_price + confirmed_partial_tp_at_r * original_risk_per_share
+- When triggered, sell confirmed_partial_tp_fraction of initial shares at the trigger level (gap-aware).
+
+IMPORTANT no-lookahead implementation:
+- Use prior day MFE to decide whether partial TP is eligible at today's open.
+- Then execute partial at today's open IF open is beyond level, else allow intraday fill.
+
+Implementation details:
+- partial_tp_level = entry_price + confirmed_partial_tp_at_r * original_risk_per_share
+
+Execution order each day for a position:
+A) Update bars_held and use PREVIOUS DAY mfe_r for management decisions at open.
+B) Evaluate partial TP fills using today’s OHLC:
+   1) If Open >= partial_tp_level:
+        fill_price = Open * (1 - exit_slippage)
+        mark partial_tp_done True
+   2) Else if High >= partial_tp_level:
+        fill_price = partial_tp_level * (1 - exit_slippage)
+        mark partial_tp_done True
+
+Shares to sell:
+- shares_to_sell = floor(shares_initial * confirmed_partial_tp_fraction)
+- ensure at least 1 and less than shares_remaining
+- shares_remaining -= shares_to_sell
+- realized_pnl += (fill_price - entry_fill) * shares_to_sell - commission
+
+After partial TP, you may (optional) move stop to entry (or entry + small buffer).
+This is configurable:
+- confirmed_move_stop_to_be_at_r already exists; keep it.
+
+
+5) CONFIRMED Trailing Stop (Optional but Recommended)
+-----------------------------------------------------
+After trailing start condition is met, tighten stop daily (never loosen):
+
+Trailing start condition:
+- prior_mfe_r >= confirmed_trailing_start_r
+OR partial_tp_done == True
+
+Trailing stop formula (ATR-based):
+- trail_stop_candidate = today_close - confirmed_trailing_atr_mult * ATR(today)
+- stop_loss_current = max(stop_loss_current, trail_stop_candidate)
+
+No-lookahead rule:
+- Use yesterday’s close/ATR to set today’s stop at open.
+Simpler safe approach:
+- Compute trail_stop_candidate using PREVIOUS DAY close and ATR:
+  trail_stop_candidate = close[t-1] - atr_mult * atr[t-1]
+  Apply at start of day t.
+
+Then apply normal stop/target checks for day t.
+
+NOTE:
+- For long positions, trailing stop should only ratchet upward.
+
+
+6) FORMING No-Progress: Support TIGHTEN_STOP Mode (Recommended Test)
+--------------------------------------------------------------------
+You already have no-progress EXIT working.
+Now make TIGHTEN_STOP a first-class alternative:
+
+If entry_kind=="FORMING" and bars_held >= forming_no_progress_days and prior_mfe_r < forming_no_progress_r:
+- If action == "EXIT": exit at today's open (existing behavior)
+- If action == "TIGHTEN_STOP":
+    new_stop = entry_price + forming_tighten_stop_to_r * (entry_price - original_stop_loss)
+    stop_loss_current = max(stop_loss_current, new_stop)
+    mark "tightened=True" so this happens only once
+    exit_reason is still STOP/TARGET later, but record in position meta that it tightened.
+
+Goal:
+- Avoid cutting winners too early while still reducing drawdown risk.
+
+
+7) CLI Flags (main.py)
+----------------------
+Add flags to control these behaviors:
+
+CONFIRMED partial TP:
+- --confirmed-partial-tp-enabled true/false
+- --confirmed-partial-tp-at-r 1.0
+- --confirmed-partial-tp-fraction 0.5
+
+CONFIRMED trailing:
+- --confirmed-trailing-enabled true/false
+- --confirmed-trailing-start-r 1.0
+- --confirmed-trailing-atr-mult 2.0
+- --atr-length 14
+
+FORMING:
+- (already present) --forming-no-progress-action EXIT|TIGHTEN_STOP
+- --forming-tighten-stop-to-r -0.25
+
+
+8) Acceptance Criteria
+----------------------
+A) Backtest runs and produces trades/equity outputs
+B) Trades can include partial exits internally while still outputting ONE final row per trade:
+   - pnl_dollars includes realized partial pnl + final pnl
+C) CONFIRMED avg R should improve (it was low)
+D) Max DD should remain close to Task 7 (do not regress back to -13%)
+E) No-lookahead maintained:
+   - trailing decisions based on prior-day close/ATR
+   - no-progress decision based on prior-day MFE, not today high
+
+
+9) Test Plan (Do this exactly)
+------------------------------
+Run baseline Task 7:
+python main.py --universe nasdaq --max-stocks 50 --backtest-v2
+
+Run Task 8 variants:
+A) Partial TP only:
+python main.py --universe nasdaq --max-stocks 50 --backtest-v2 \
+  --confirmed-partial-tp-enabled true \
+  --confirmed-trailing-enabled false
+
+B) Partial TP + trailing:
+python main.py --universe nasdaq --max-stocks 50 --backtest-v2 \
+  --confirmed-partial-tp-enabled true \
+  --confirmed-trailing-enabled true \
+  --confirmed-trailing-start-r 1.0 \
+  --confirmed-trailing-atr-mult 2.0
+
+C) FORMING tighten stop instead of exit:
+python main.py --universe nasdaq --max-stocks 50 --backtest-v2 \
+  --forming-no-progress-action TIGHTEN_STOP \
+  --forming-tighten-stop-to-r -0.25
+
+Compare metrics:
+- total return
+- max drawdown
+- expectancy overall
+- expectancy confirmed
+- profit factor
+- avg hold days
+
+
+Non-Goals
+---------
+- Portfolio correlation/sector caps
+- Walk-forward including Task 8 (that becomes Task 9)
+- Live execution / broker integration
