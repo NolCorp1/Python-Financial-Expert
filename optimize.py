@@ -109,33 +109,71 @@ def slice_price_data(
     return sliced
 
 
-def build_param_grid(grid_size_limit: int = 150) -> List[Dict[str, Any]]:
+def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[str, Any]]:
     """
-    Build parameter grid for optimization.
+    Build parameter grid for optimization including portfolio/exit knobs.
+    
+    Includes:
+    - Detection params (reduced to avoid explosion)
+    - Portfolio/risk rules (Task 7)
+    - Exit management rules (Task 8)
     
     Returns:
-        List of parameter dictionaries
+        List of parameter dictionaries (randomly sampled if exceeds limit)
     """
-    param_ranges = {
-        'low_tolerance': [0.03, 0.04, 0.05],
-        'neckline_min_rise': [0.06, 0.08, 0.10],
-        'min_sep': [20, 25, 30],
-        'forming_lookahead_days': [10, 15, 20],
-        'stop_loss_buffer': [0.015, 0.02, 0.03],
-        'breakout_buffer': [0.0, 0.002, 0.005],
+    import random
+    
+    detection_params = {
+        'low_tolerance': [0.04, 0.05],
+        'neckline_min_rise': [0.08, 0.10],
+        'min_sep': [20, 30],
+        'stop_loss_buffer': [0.02],
+        'breakout_buffer': [0.002],
     }
     
-    keys = list(param_ranges.keys())
-    values = [param_ranges[k] for k in keys]
+    portfolio_params = {
+        'risk_fraction_forming': [0.004, 0.006, 0.008],
+        'max_positions_forming': [2, 3, 4],
+    }
+    
+    forming_exit_params = {
+        'forming_no_progress_days': [15, 20, 25],
+        'forming_no_progress_r': [0.25, 0.50, 0.75],
+        'forming_max_hold_days': [45, 60, 75],
+    }
+    
+    confirmed_exit_params = {
+        'confirmed_partial_tp_enabled': [True, False],
+        'confirmed_partial_tp_at_r': [0.50, 0.75, 1.00],
+        'confirmed_partial_tp_fraction': [0.33, 0.50],
+        'confirmed_move_stop_to_be_at_r': [0.25, 0.50, 0.75],
+        'confirmed_trailing_enabled': [False, True],
+        'confirmed_trailing_start_r': [0.50, 0.75, 1.00],
+        'confirmed_trailing_atr_mult': [1.5, 2.0, 2.5],
+    }
+    
+    all_params = {}
+    all_params.update(detection_params)
+    all_params.update(portfolio_params)
+    all_params.update(forming_exit_params)
+    all_params.update(confirmed_exit_params)
+    
+    keys = list(all_params.keys())
+    values = [all_params[k] for k in keys]
+    
+    all_combos = list(product(*values))
+    total_combos = len(all_combos)
+    
+    if total_combos > grid_size_limit:
+        random.seed(seed)
+        all_combos = random.sample(all_combos, grid_size_limit)
     
     grid = []
-    for combo in product(*values):
+    for combo in all_combos:
         params = dict(zip(keys, combo))
         params['max_sep'] = 260
+        params['forming_no_progress_action'] = 'EXIT'
         grid.append(params)
-        
-        if len(grid) >= grid_size_limit:
-            break
     
     return grid
 
@@ -165,6 +203,53 @@ def params_to_config(params: Dict[str, Any], base_config: Dict = None) -> Dict:
     return config
 
 
+def params_to_backtest_config(params: Dict[str, Any], base_cfg: BacktestConfig) -> BacktestConfig:
+    """
+    Create a new BacktestConfig with portfolio/exit params from optimization grid.
+    
+    Args:
+        params: Optimization parameter dict
+        base_cfg: Base backtest configuration
+        
+    Returns:
+        BacktestConfig with updated portfolio/exit params
+    """
+    from dataclasses import replace
+    
+    updates = {}
+    
+    if 'risk_fraction_forming' in params:
+        updates['risk_fraction_forming'] = params['risk_fraction_forming']
+    if 'max_positions_forming' in params:
+        updates['max_positions_forming'] = params['max_positions_forming']
+    if 'forming_no_progress_days' in params:
+        updates['forming_no_progress_days'] = params['forming_no_progress_days']
+    if 'forming_no_progress_r' in params:
+        updates['forming_no_progress_r'] = params['forming_no_progress_r']
+    if 'forming_no_progress_action' in params:
+        updates['forming_no_progress_action'] = params['forming_no_progress_action']
+    if 'forming_max_hold_days' in params:
+        updates['forming_max_hold_days'] = params['forming_max_hold_days']
+    if 'confirmed_partial_tp_enabled' in params:
+        updates['confirmed_partial_tp_enabled'] = params['confirmed_partial_tp_enabled']
+    if 'confirmed_partial_tp_at_r' in params:
+        updates['confirmed_partial_tp_at_r'] = params['confirmed_partial_tp_at_r']
+    if 'confirmed_partial_tp_fraction' in params:
+        updates['confirmed_partial_tp_fraction'] = params['confirmed_partial_tp_fraction']
+    if 'confirmed_move_stop_to_be_at_r' in params:
+        updates['confirmed_move_stop_to_be_at_r'] = params['confirmed_move_stop_to_be_at_r']
+    if 'confirmed_trailing_enabled' in params:
+        updates['confirmed_trailing_enabled'] = params['confirmed_trailing_enabled']
+    if 'confirmed_trailing_start_r' in params:
+        updates['confirmed_trailing_start_r'] = params['confirmed_trailing_start_r']
+    if 'confirmed_trailing_atr_mult' in params:
+        updates['confirmed_trailing_atr_mult'] = params['confirmed_trailing_atr_mult']
+    
+    if updates:
+        return replace(base_cfg, **updates)
+    return base_cfg
+
+
 def run_scan_and_backtest(
     price_data: Dict[str, pd.DataFrame],
     params: Dict[str, Any],
@@ -175,13 +260,15 @@ def run_scan_and_backtest(
     
     Args:
         price_data: Dict of symbol -> OHLCV DataFrame
-        params: Optimization parameters
-        backtest_cfg: Backtest configuration
+        params: Optimization parameters (detection + portfolio/exit)
+        backtest_cfg: Base backtest configuration
         
     Returns:
         Tuple of (trades_df, equity_df)
     """
     config = params_to_config(params)
+    
+    cfg = params_to_backtest_config(params, backtest_cfg)
     
     all_signals = []
     
@@ -203,9 +290,93 @@ def run_scan_and_backtest(
     
     signals_by_symbol = group_signals_by_symbol(all_signals)
     
-    trades_df, equity_df = run_backtest(signals_by_symbol, price_data, backtest_cfg)
+    trades_df, equity_df = run_backtest(signals_by_symbol, price_data, cfg)
     
     return trades_df, equity_df
+
+
+def compute_exposure_days(trades_df: pd.DataFrame) -> int:
+    """Estimate number of days with at least one open position."""
+    if trades_df.empty:
+        return 0
+    
+    all_days = set()
+    for _, trade in trades_df.iterrows():
+        entry = pd.to_datetime(trade['entry_date'])
+        exit_d = pd.to_datetime(trade['exit_date'])
+        days = pd.date_range(entry, exit_d, freq='B')
+        all_days.update(days)
+    
+    return len(all_days)
+
+
+def score_oos_composite(
+    trades_df: pd.DataFrame,
+    equity_df: pd.DataFrame,
+    max_dd_limit: float = 0.12,
+    min_trades: int = 20,
+    min_exposure_days: int = 20
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Composite scoring that rewards return but penalizes:
+    - Too few trades
+    - Too little exposure
+    - Large drawdowns
+    
+    Args:
+        trades_df: Trades DataFrame
+        equity_df: Equity DataFrame
+        max_dd_limit: Maximum allowed drawdown (e.g., 0.12 = 12%)
+        min_trades: Minimum trades threshold
+        min_exposure_days: Minimum exposure days threshold
+        
+    Returns:
+        Tuple of (score, diagnostics_dict)
+    """
+    diag = {
+        'trade_count': 0,
+        'exposure_days': 0,
+        'total_return_pct': 0.0,
+        'max_drawdown_pct': 0.0,
+        'score': float('-inf'),
+        'fail_reason': None,
+    }
+    
+    if trades_df.empty or equity_df.empty:
+        diag['fail_reason'] = 'no_trades'
+        return float('-inf'), diag
+    
+    tr = compute_trade_metrics(trades_df)
+    eq = compute_equity_metrics(equity_df)
+    
+    trade_count = tr['trade_count']
+    exposure_days = compute_exposure_days(trades_df)
+    total_return = eq.get('total_return_pct', 0)
+    max_dd_pct = abs(eq.get('max_drawdown_pct', 0))
+    
+    diag['trade_count'] = trade_count
+    diag['exposure_days'] = exposure_days
+    diag['total_return_pct'] = total_return
+    diag['max_drawdown_pct'] = -max_dd_pct
+    
+    if trade_count < min_trades:
+        diag['fail_reason'] = 'too_few_trades'
+        return float('-inf'), diag
+    
+    if max_dd_pct > max_dd_limit * 100:
+        diag['fail_reason'] = 'max_dd_exceeded'
+        return float('-inf'), diag
+    
+    trade_penalty = min(0.0, (trade_count - min_trades) / min_trades)
+    exposure_penalty = 0.0
+    if exposure_days < min_exposure_days:
+        exposure_penalty = (min_exposure_days - exposure_days) / min_exposure_days
+    
+    base = total_return
+    score = base * (1 + 0.25 * trade_penalty) - 0.50 * max_dd_pct - 0.25 * exposure_penalty
+    
+    diag['score'] = score
+    return score, diag
 
 
 def score_oos(
@@ -214,7 +385,8 @@ def score_oos(
     objective: str = 'total_return',
     max_dd_limit: float = 0.12,
     min_trades: int = 2,
-    require_min_trades: bool = True
+    require_min_trades: bool = True,
+    min_exposure_days: int = 20
 ) -> Tuple[float, bool]:
     """
     Score out-of-sample performance with constraints.
@@ -222,16 +394,24 @@ def score_oos(
     Args:
         trades_df: Trades DataFrame
         equity_df: Equity DataFrame
-        objective: Scoring objective ('total_return', 'sharpe', 'expectancy_r')
+        objective: Scoring objective ('total_return', 'sharpe', 'expectancy_r', 'composite')
         max_dd_limit: Maximum allowed drawdown (positive, e.g., 0.12 = 12%)
         min_trades: Minimum trades for quality threshold
         require_min_trades: If True, return -inf for < min_trades; if False, return score anyway
+        min_exposure_days: Minimum exposure days for composite scoring
         
     Returns:
         Tuple of (score, meets_quality) where meets_quality indicates trade count threshold met
     """
     if trades_df.empty or equity_df.empty:
         return float('-inf'), False
+    
+    if objective == 'composite':
+        score, diag = score_oos_composite(
+            trades_df, equity_df, max_dd_limit, min_trades, min_exposure_days
+        )
+        meets_quality = diag['trade_count'] >= min_trades
+        return score, meets_quality
     
     tr = compute_trade_metrics(trades_df)
     eq = compute_equity_metrics(equity_df)
@@ -273,7 +453,8 @@ def run_window_optimization(
     objective: str = 'total_return',
     max_dd_train: float = 0.18,
     max_dd_test: float = 0.12,
-    min_trades_test: int = 8,
+    min_trades_test: int = 20,
+    min_exposure_days_test: int = 20,
     verbose: bool = False
 ) -> Dict[str, Any]:
     """
@@ -289,6 +470,7 @@ def run_window_optimization(
         max_dd_train: Max drawdown for training
         max_dd_test: Max drawdown for testing
         min_trades_test: Min trades for test
+        min_exposure_days_test: Min exposure days for composite scoring
         verbose: Show progress
         
     Returns:
@@ -311,6 +493,8 @@ def run_window_optimization(
     
     best_train_score = float('-inf')
     best_params = None
+    best_train_trades_df = pd.DataFrame()
+    best_train_equity_df = pd.DataFrame()
     
     iterator = param_grid if not verbose else tqdm(param_grid, desc="  Grid search", leave=False)
     
@@ -322,12 +506,15 @@ def run_window_optimization(
             objective=objective,
             max_dd_limit=max_dd_train,
             min_trades=2,
-            require_min_trades=True
+            require_min_trades=True,
+            min_exposure_days=min_exposure_days_test
         )
         
         if score > best_train_score:
             best_train_score = score
             best_params = params.copy()
+            best_train_trades_df = trades_df
+            best_train_equity_df = equity_df
     
     if best_params is None:
         return {
@@ -341,6 +528,9 @@ def run_window_optimization(
             'error': 'No valid params found'
         }
     
+    train_tr = compute_trade_metrics(best_train_trades_df) if not best_train_trades_df.empty else {}
+    train_eq = compute_equity_metrics(best_train_equity_df) if not best_train_equity_df.empty else {}
+    
     test_trades, test_equity = run_scan_and_backtest(test_data, best_params, backtest_cfg)
     
     test_score, test_quality = score_oos(
@@ -348,12 +538,14 @@ def run_window_optimization(
         objective=objective,
         max_dd_limit=max_dd_test,
         min_trades=min_trades_test,
-        require_min_trades=False
+        require_min_trades=False,
+        min_exposure_days=min_exposure_days_test
     )
     
     tr = compute_trade_metrics(test_trades) if not test_trades.empty else {}
     eq = compute_equity_metrics(test_equity) if not test_equity.empty else {}
     split = compute_split_metrics(test_trades, test_equity) if not test_trades.empty else {}
+    test_exposure_days = compute_exposure_days(test_trades)
     
     return {
         'train_start': train_start,
@@ -361,13 +553,17 @@ def run_window_optimization(
         'test_start': test_start,
         'test_end': test_end,
         'best_params': best_params,
+        'best_params_json': json.dumps(best_params, default=str),
         'train_score': best_train_score,
+        'train_trade_count': train_tr.get('trade_count', 0),
+        'train_total_return_pct': train_eq.get('total_return_pct', np.nan),
         'test_score': test_score,
         'test_quality': test_quality,
         'test_total_return_pct': eq.get('total_return_pct', np.nan),
         'test_max_dd_pct': eq.get('max_drawdown_pct', np.nan),
         'test_sharpe': eq.get('sharpe_ratio', np.nan),
         'test_trade_count': tr.get('trade_count', 0),
+        'test_exposure_days': test_exposure_days,
         'test_expectancy_r': tr.get('expectancy_r', np.nan),
         'test_win_rate': tr.get('win_rate', np.nan),
         'test_profit_factor': tr.get('profit_factor', np.nan),
@@ -399,8 +595,68 @@ def compute_stability_summary(window_results: List[Dict[str, Any]]) -> Dict[str,
     return {k: dict(v) for k, v in counts.items()}
 
 
+def format_stability_summary_v2(
+    stability: Dict[str, Dict[str, int]], 
+    window_results: List[Dict[str, Any]]
+) -> str:
+    """Format stability summary v2 with aggregate stats."""
+    lines = ["WALK-FORWARD STABILITY SUMMARY v2", "=" * 50]
+    
+    priority_params = [
+        'risk_fraction_forming',
+        'max_positions_forming',
+        'forming_no_progress_days',
+        'forming_no_progress_r',
+        'forming_max_hold_days',
+        'confirmed_partial_tp_at_r',
+        'confirmed_partial_tp_enabled',
+        'confirmed_move_stop_to_be_at_r',
+        'confirmed_trailing_enabled',
+        'confirmed_trailing_atr_mult',
+        'low_tolerance',
+        'neckline_min_rise',
+        'min_sep',
+    ]
+    
+    lines.append("\n--- Parameter Win Counts ---")
+    for param in priority_params:
+        if param in stability:
+            value_counts = stability[param]
+            sorted_counts = sorted(value_counts.items(), key=lambda x: -x[1])
+            counts_str = ", ".join(f"{v}({c})" for v, c in sorted_counts)
+            lines.append(f"  {param}: {counts_str}")
+    
+    for param, value_counts in sorted(stability.items()):
+        if param not in priority_params:
+            sorted_counts = sorted(value_counts.items(), key=lambda x: -x[1])
+            counts_str = ", ".join(f"{v}({c})" for v, c in sorted_counts)
+            lines.append(f"  {param}: {counts_str}")
+    
+    test_returns = [r.get('test_total_return_pct', np.nan) for r in window_results]
+    test_dds = [r.get('test_max_dd_pct', np.nan) for r in window_results]
+    valid_returns = [r for r in test_returns if not np.isnan(r)]
+    valid_dds = [d for d in test_dds if not np.isnan(d)]
+    
+    passing_windows = sum(
+        1 for r in window_results 
+        if r.get('test_score', float('-inf')) != float('-inf')
+    )
+    total_windows = len(window_results)
+    
+    lines.append("\n--- Aggregate Statistics ---")
+    if valid_returns:
+        lines.append(f"  Mean test return: {np.mean(valid_returns):.2f}%")
+        lines.append(f"  Median test return: {np.median(valid_returns):.2f}%")
+    if valid_dds:
+        lines.append(f"  Mean test max DD: {np.mean(valid_dds):.2f}%")
+        lines.append(f"  Median test max DD: {np.median(valid_dds):.2f}%")
+    lines.append(f"  Windows passing constraints: {passing_windows}/{total_windows} ({100*passing_windows/total_windows if total_windows else 0:.0f}%)")
+    
+    return "\n".join(lines)
+
+
 def format_stability_summary(stability: Dict[str, Dict[str, int]]) -> str:
-    """Format stability summary as readable text."""
+    """Format stability summary as readable text (legacy)."""
     lines = ["PARAMETER STABILITY SUMMARY", "=" * 40]
     
     for param, value_counts in sorted(stability.items()):
@@ -458,30 +714,33 @@ def run_walkforward_optimization(
     train_bars: int = 504,
     test_bars: int = 126,
     step_bars: int = 126,
-    objective: str = 'total_return',
+    objective: str = 'composite',
     max_dd_train: float = 0.18,
     max_dd_test: float = 0.12,
-    min_trades_test: int = 8,
-    grid_size_limit: int = 150,
+    min_trades_test: int = 20,
+    min_exposure_days_test: int = 20,
+    grid_size_limit: int = 250,
     initial_capital: float = 100000.0,
     verbose: bool = True,
     liquidity_config: Optional[Dict[str, Any]] = None
 ) -> Tuple[pd.DataFrame, Dict[str, Any], str]:
     """
-    Run complete walk-forward optimization.
+    Run complete walk-forward optimization v2.
     
     Args:
         symbols: List of symbols to optimize
         train_bars: Training period bars
         test_bars: Testing period bars
         step_bars: Step size between windows
-        objective: Scoring objective
+        objective: Scoring objective ('total_return', 'sharpe', 'expectancy_r', 'composite')
         max_dd_train: Max drawdown for training
         max_dd_test: Max drawdown for testing
         min_trades_test: Min trades for test
+        min_exposure_days_test: Min exposure days for composite scoring
         grid_size_limit: Max grid combinations
         initial_capital: Starting capital
         verbose: Show progress
+        liquidity_config: Liquidity filter settings
         
     Returns:
         Tuple of (results_df, best_params, summary_text)
@@ -582,6 +841,7 @@ def run_walkforward_optimization(
             max_dd_train=max_dd_train,
             max_dd_test=max_dd_test,
             min_trades_test=min_trades_test,
+            min_exposure_days_test=min_exposure_days_test,
             verbose=verbose
         )
         
@@ -596,20 +856,18 @@ def run_walkforward_optimization(
     results_df = pd.DataFrame(window_results)
     
     cols = ['window_id', 'train_start', 'train_end', 'test_start', 'test_end',
-            'train_score', 'test_score', 'test_total_return_pct', 'test_max_dd_pct',
-            'test_sharpe', 'test_trade_count', 'test_expectancy_r', 'test_win_rate',
-            'test_profit_factor', 'test_forming_expectancy_r', 'test_confirmed_expectancy_r']
+            'train_score', 'train_trade_count', 'train_total_return_pct',
+            'test_score', 'test_total_return_pct', 'test_max_dd_pct',
+            'test_sharpe', 'test_trade_count', 'test_exposure_days', 
+            'test_expectancy_r', 'test_win_rate', 'test_profit_factor', 
+            'test_forming_expectancy_r', 'test_confirmed_expectancy_r',
+            'best_params_json']
     
     available_cols = [c for c in cols if c in results_df.columns]
     results_df = results_df[available_cols + [c for c in results_df.columns if c not in available_cols]]
     
-    if 'best_params' in results_df.columns:
-        results_df['best_params_json'] = results_df['best_params'].apply(
-            lambda x: json.dumps(x) if x else None
-        )
-    
     stability = compute_stability_summary(window_results)
-    stability_text = format_stability_summary(stability)
+    stability_text = format_stability_summary_v2(stability, window_results)
     
     best_params, best_mean_score = find_overall_best_params(window_results)
     
@@ -655,16 +913,18 @@ def main():
                        help='Testing period in bars (~126 = 6 months)')
     parser.add_argument('--step-bars', type=int, default=126,
                        help='Step size between windows')
-    parser.add_argument('--objective', type=str, default='total_return',
-                       choices=['total_return', 'sharpe', 'expectancy_r'],
-                       help='Optimization objective')
+    parser.add_argument('--objective', type=str, default='composite',
+                       choices=['total_return', 'sharpe', 'expectancy_r', 'composite'],
+                       help='Optimization objective (composite includes trade/exposure penalties)')
     parser.add_argument('--max-dd-train', type=float, default=0.18,
                        help='Max drawdown for training (0.18 = 18%%)')
     parser.add_argument('--max-dd-test', type=float, default=0.12,
                        help='Max drawdown for testing (0.12 = 12%%)')
-    parser.add_argument('--min-trades-test', type=int, default=2,
+    parser.add_argument('--min-trades-test', type=int, default=20,
                        help='Minimum trades required in test period')
-    parser.add_argument('--grid-size-limit', type=int, default=150,
+    parser.add_argument('--min-exposure-days-test', type=int, default=20,
+                       help='Minimum exposure days for composite scoring')
+    parser.add_argument('--grid-size-limit', type=int, default=250,
                        help='Maximum parameter combinations')
     parser.add_argument('--initial-capital', type=float, default=100000.0,
                        help='Starting capital for backtest')
@@ -713,6 +973,7 @@ def main():
         max_dd_train=args.max_dd_train,
         max_dd_test=args.max_dd_test,
         min_trades_test=args.min_trades_test,
+        min_exposure_days_test=args.min_exposure_days_test,
         grid_size_limit=args.grid_size_limit,
         initial_capital=args.initial_capital,
         verbose=not args.quiet

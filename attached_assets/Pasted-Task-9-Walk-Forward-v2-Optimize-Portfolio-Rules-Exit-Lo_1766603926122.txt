@@ -1,0 +1,175 @@
+Task 9 — Walk-Forward v2 (Optimize Portfolio Rules + Exit Logic + Robust Scoring)
+=================================================================================
+Objective
+---------
+Upgrade walk-forward optimization to tune the REAL trading system:
+- Pattern params (already)
+- Portfolio/risk rules (Task 7)
+- Exit management rules (Task 8)
+And select robust settings via out-of-sample scoring with:
+- drawdown constraints
+- minimum trades constraints
+- and an objective that doesn't "win by not trading"
+
+This task is the bridge from "works on a sample" to "scales as a trader".
+
+Files to Edit
+-------------
+- optimize.py
+- (optional) metrics.py (add composite scoring helper)
+- (optional) main.py (no changes required)
+
+Inputs Assumed
+--------------
+- optimize.py already supports:
+  - rolling train/test windows
+  - parameter grid search
+  - dd constraints
+  - results CSV + best params JSON + stability summary
+
+- backtester supports Task 7 & 8 config fields
+- main scan pipeline can run from optimize without manual CLI calls
+
+
+1) Expand Parameter Grid to Include Portfolio/Exit Knobs
+--------------------------------------------------------
+In optimize.py, extend param grid to include these NEW keys:
+
+A) Risk split + caps
+- risk_fraction_forming: [0.004, 0.006, 0.008]          # 0.4%, 0.6%, 0.8%
+- max_positions_forming: [2, 3, 4]
+
+B) FORMING no-progress
+- forming_no_progress_days: [15, 20, 25]
+- forming_no_progress_r: [0.25, 0.50, 0.75]
+- forming_no_progress_action: ["EXIT"]   # keep EXIT only for now since tighten underperformed
+- forming_max_hold_days: [45, 60, 75]
+
+C) CONFIRMED management
+Given partial TP rarely triggers at +1R, test earlier thresholds:
+- confirmed_partial_tp_enabled: [True, False]
+- confirmed_partial_tp_at_r: [0.50, 0.75, 1.00]
+- confirmed_partial_tp_fraction: [0.33, 0.50]
+
+Breakeven:
+- confirmed_move_stop_to_be_at_r: [0.25, 0.50, 0.75]
+
+Trailing:
+- confirmed_trailing_enabled: [False, True]
+- confirmed_trailing_start_r: [0.50, 0.75, 1.00]
+- confirmed_trailing_atr_mult: [1.5, 2.0, 2.5]
+
+Guardrail: grid-size limit
+- Cap total combos to ~200–400 per window (random sample if larger)
+
+NOTE:
+- Keep detection params grid small; don’t explode combinations.
+- If total combinations exceed limit, randomly sample with a fixed seed.
+
+
+2) Improve Scoring: Add Trade-Count + Exposure Penalties
+--------------------------------------------------------
+Your prior issue: too few quality windows / trades.
+
+Implement a composite score that rewards return but penalizes:
+- too few trades
+- too little exposure
+
+Add function in optimize.py:
+
+    def score_oos_composite(trades_df, equity_df, max_dd_limit, min_trades, min_exposure_days) -> float
+
+Compute:
+- eq = compute_equity_metrics(equity_df)
+- tr = compute_trade_metrics(trades_df)
+
+Hard fails:
+- if trade_count < min_trades: return -inf
+- if max_drawdown_pct < -max_dd_limit: return -inf
+
+Soft penalties:
+- trade_penalty = min(0, (trade_count - min_trades) / min_trades)   # clamp
+- exposure_days = count days with any open position (estimate from trades or equity exposure column if exists)
+- exposure_penalty if exposure_days < min_exposure_days
+
+Score baseline:
+- base = eq["total_return_pct"]
+
+Final:
+- score = base * (1 + 0.25*trade_penalty) - 0.50*abs(eq["max_drawdown_pct"])
+
+(You can tune weights, but keep it simple v1.)
+
+Add CLI args:
+- --min-trades-test (default 20 portfolio-level trades per test window)
+- --min-exposure-days-test (default 20 days per test window)
+- --objective composite|total_return|sharpe|expectancy_r
+
+
+3) Record More Diagnostics Per Window
+-------------------------------------
+In outputs/walkforward_results.csv add:
+- test_trade_count
+- test_exposure_days
+- test_profit_factor
+- test_expectancy_r
+- test_win_rate
+- test_max_dd_pct
+- test_total_return_pct
+- test_forming_expectancy_r
+- test_confirmed_expectancy_r
+- selected params for risk/caps/exits (as json)
+
+Also add:
+- train_trade_count
+- train_total_return
+So you can detect overfit (train good / test bad).
+
+
+4) Stability Summary v2
+-----------------------
+In outputs/walkforward_summary.txt print:
+- How often each value won for:
+  - risk_fraction_forming
+  - max_positions_forming
+  - forming_no_progress_days
+  - forming_no_progress_r
+  - confirmed_partial_tp_at_r
+  - confirmed_move_stop_to_be_at_r
+  - confirmed_trailing_atr_mult
+
+Also print:
+- Mean/median test return
+- Mean/median test max DD
+- Percent windows passing constraints
+
+
+5) Acceptance Criteria
+----------------------
+A) optimize.py can tune portfolio rules + exits (Task 7/8) without code changes elsewhere
+B) Results CSV contains trade/exposure diagnostics
+C) Composite scoring prevents “wins by not trading”
+D) Best params reflect stable OOS performance across multiple windows
+E) Run completes within reasonable time (grid capped)
+
+
+6) Manual Test Plan
+-------------------
+Start small:
+python optimize.py --universe nasdaq --max-stocks 200 \
+  --train-bars 504 --test-bars 126 --step-bars 126 \
+  --objective composite --min-trades-test 20 --min-exposure-days-test 20 \
+  --max-dd-test 0.12 --grid-size-limit 250
+
+Then scale:
+python optimize.py --universe nasdaq --max-stocks 800 \
+  --objective composite --min-trades-test 30 --min-exposure-days-test 30 \
+  --grid-size-limit 300
+
+
+Non-Goals
+---------
+- Correlation/sector caps
+- Dynamic universe / regime switching
+- Live broker execution
+These come later.

@@ -1,9 +1,21 @@
 {
-  "breakout_buffer": 0.0,
-  "forming_lookahead_days": 10,
-  "low_tolerance": 0.03,
+  "breakout_buffer": 0.002,
+  "confirmed_move_stop_to_be_at_r": 0.5,
+  "confirmed_partial_tp_at_r": 0.5,
+  "confirmed_partial_tp_enabled": true,
+  "confirmed_partial_tp_fraction": 0.33,
+  "confirmed_trailing_atr_mult": 1.5,
+  "confirmed_trailing_enabled": false,
+  "confirmed_trailing_start_r": 1.0,
+  "forming_max_hold_days": 45,
+  "forming_no_progress_action": "EXIT",
+  "forming_no_progress_days": 25,
+  "forming_no_progress_r": 0.5,
+  "low_tolerance": 0.05,
+  "max_positions_forming": 3,
   "max_sep": 260,
-  "min_sep": 20,
-  "neckline_min_rise": 0.06,
-  "stop_loss_buffer": 0.015
+  "min_sep": 30,
+  "neckline_min_rise": 0.1,
+  "risk_fraction_forming": 0.008,
+  "stop_loss_buffer": 0.02
 }
