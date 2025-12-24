@@ -53,6 +53,21 @@ class BacktestConfig:
     commission_per_trade: float = 0.0
     min_price: float = 1.0
     max_hold_days: Optional[int] = None
+    
+    risk_fraction_confirmed: float = 0.010
+    risk_fraction_forming: float = 0.006
+    
+    max_positions_total: int = 10
+    max_positions_forming: int = 3
+    max_positions_confirmed: int = 10
+    
+    forming_max_hold_days: int = 60
+    forming_no_progress_days: int = 20
+    forming_no_progress_r: float = 0.50
+    forming_no_progress_action: str = "EXIT"
+    forming_tighten_stop_to_r: float = -0.25
+    
+    confirmed_move_stop_to_be_at_r: float = 0.50
 
 
 @dataclass
@@ -64,11 +79,16 @@ class OpenPosition:
     entry_date: pd.Timestamp
     entry_fill: float
     stop_loss: float
+    original_stop_loss: float
     take_profit: float
     shares: int
     entry_commission: float
     slippage_bps: float
     meta: dict = field(default_factory=dict)
+    bars_held: int = 0
+    mfe_r: float = 0.0
+    tightened: bool = False
+    moved_to_be: bool = False
 
 
 def group_signals_by_symbol(signals: List[TradeSignal]) -> Dict[str, List[TradeSignal]]:
@@ -89,7 +109,7 @@ def run_backtest(
     cfg: BacktestConfig
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Run no-lookahead backtest simulation.
+    Run no-lookahead backtest simulation with portfolio rules engine.
     
     Args:
         signals_by_symbol: Dict mapping symbol to list of TradeSignals
@@ -106,6 +126,12 @@ def run_backtest(
     equity_history: List[dict] = []
     
     exited_today: Dict[pd.Timestamp, set] = {}
+    
+    skipped_max_total = 0
+    skipped_max_forming = 0
+    skipped_max_confirmed = 0
+    skipped_symbol_already_open = 0
+    skipped_invalid_sizing = 0
     
     all_signals = []
     for sym, sigs in signals_by_symbol.items():
@@ -124,8 +150,45 @@ def run_backtest(
     signal_idx = 0
     running_max_equity = cfg.initial_capital
     
+    def close_position(sym: str, pos: OpenPosition, exit_date: pd.Timestamp, 
+                       exit_price: float, exit_reason: str) -> dict:
+        """Helper to create trade record and update cash."""
+        nonlocal cash
+        exit_commission = cfg.commission_per_trade
+        proceeds = exit_price * pos.shares - exit_commission
+        cash += proceeds
+        
+        pnl_dollars = (exit_price - pos.entry_fill) * pos.shares - pos.entry_commission - exit_commission
+        risk_amount = (pos.entry_fill - pos.original_stop_loss) * pos.shares
+        pnl_r_multiple = pnl_dollars / risk_amount if risk_amount > 0 else 0.0
+        hold_days = (exit_date - pos.entry_date).days
+        
+        return {
+            'symbol': sym,
+            'pattern_id': pos.pattern_id,
+            'entry_kind': pos.entry_kind,
+            'entry_date': pos.entry_date,
+            'entry_price': round(pos.entry_fill, 2),
+            'stop_loss': round(pos.stop_loss, 2),
+            'original_stop_loss': round(pos.original_stop_loss, 2),
+            'take_profit': round(pos.take_profit, 2),
+            'shares': pos.shares,
+            'exit_date': exit_date,
+            'exit_price': round(exit_price, 2),
+            'exit_reason': exit_reason,
+            'pnl_dollars': round(pnl_dollars, 2),
+            'pnl_r_multiple': round(pnl_r_multiple, 2),
+            'hold_days': hold_days,
+            'bars_held': pos.bars_held,
+            'mfe_r': round(pos.mfe_r, 2),
+            'slippage_bps': pos.slippage_bps,
+            'commissions': round(pos.entry_commission + exit_commission, 2),
+            'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
+        }
+    
     for current_date in all_dates:
         positions_to_close = []
+        
         for sym, pos in list(open_positions.items()):
             if sym not in price_data_by_symbol:
                 continue
@@ -141,62 +204,62 @@ def run_backtest(
             high_price = bar['High']
             low_price = bar['Low']
             
+            pos.bars_held += 1
+            
             exit_price = None
             exit_reason = None
             
-            if open_price <= pos.stop_loss:
-                exit_price = open_price * (1 - cfg.slippage_bps / 10000)
-                exit_reason = "STOP"
-            elif open_price >= pos.take_profit:
-                exit_price = open_price * (1 - cfg.slippage_bps / 10000)
-                exit_reason = "TARGET"
-            elif low_price <= pos.stop_loss and high_price >= pos.take_profit:
-                exit_price = pos.stop_loss * (1 - cfg.slippage_bps / 10000)
-                exit_reason = "STOP"
-            elif low_price <= pos.stop_loss:
-                exit_price = pos.stop_loss * (1 - cfg.slippage_bps / 10000)
-                exit_reason = "STOP"
-            elif high_price >= pos.take_profit:
-                exit_price = pos.take_profit * (1 - cfg.slippage_bps / 10000)
-                exit_reason = "TARGET"
-            elif cfg.max_hold_days is not None:
-                hold_days = (current_date - pos.entry_date).days
-                if hold_days >= cfg.max_hold_days:
-                    exit_price = bar['Close'] * (1 - cfg.slippage_bps / 10000)
+            if pos.entry_kind == "FORMING":
+                if pos.bars_held >= cfg.forming_max_hold_days:
+                    exit_price = open_price * (1 - cfg.slippage_bps / 10000)
                     exit_reason = "TIME"
+                elif pos.bars_held >= cfg.forming_no_progress_days and pos.mfe_r < cfg.forming_no_progress_r:
+                    if cfg.forming_no_progress_action == "EXIT":
+                        exit_price = open_price * (1 - cfg.slippage_bps / 10000)
+                        exit_reason = "NO_PROGRESS"
+                    elif cfg.forming_no_progress_action == "TIGHTEN_STOP" and not pos.tightened:
+                        stop_dist_orig = pos.entry_fill - pos.original_stop_loss
+                        new_stop = pos.entry_fill + cfg.forming_tighten_stop_to_r * stop_dist_orig
+                        pos.stop_loss = max(pos.stop_loss, new_stop)
+                        pos.tightened = True
+            
+            if exit_price is None:
+                stop_dist = pos.entry_fill - pos.original_stop_loss
+                if stop_dist > 0:
+                    current_r = (high_price - pos.entry_fill) / stop_dist
+                    pos.mfe_r = max(pos.mfe_r, current_r)
+                
+                if pos.entry_kind == "CONFIRMED" and cfg.confirmed_move_stop_to_be_at_r > 0:
+                    if pos.mfe_r >= cfg.confirmed_move_stop_to_be_at_r and not pos.moved_to_be:
+                        pos.stop_loss = max(pos.stop_loss, pos.entry_fill)
+                        pos.moved_to_be = True
+            
+            if exit_price is None:
+                if open_price <= pos.stop_loss:
+                    exit_price = open_price * (1 - cfg.slippage_bps / 10000)
+                    exit_reason = "STOP"
+                elif open_price >= pos.take_profit:
+                    exit_price = open_price * (1 - cfg.slippage_bps / 10000)
+                    exit_reason = "TARGET"
+                elif low_price <= pos.stop_loss and high_price >= pos.take_profit:
+                    exit_price = pos.stop_loss * (1 - cfg.slippage_bps / 10000)
+                    exit_reason = "STOP"
+                elif low_price <= pos.stop_loss:
+                    exit_price = pos.stop_loss * (1 - cfg.slippage_bps / 10000)
+                    exit_reason = "STOP"
+                elif high_price >= pos.take_profit:
+                    exit_price = pos.take_profit * (1 - cfg.slippage_bps / 10000)
+                    exit_reason = "TARGET"
+                elif cfg.max_hold_days is not None:
+                    if pos.bars_held >= cfg.max_hold_days:
+                        exit_price = bar['Close'] * (1 - cfg.slippage_bps / 10000)
+                        exit_reason = "TIME"
             
             if exit_price is not None:
                 positions_to_close.append((sym, pos, current_date, exit_price, exit_reason))
         
         for sym, pos, exit_date, exit_price, exit_reason in positions_to_close:
-            exit_commission = cfg.commission_per_trade
-            proceeds = exit_price * pos.shares - exit_commission
-            cash += proceeds
-            
-            pnl_dollars = (exit_price - pos.entry_fill) * pos.shares - pos.entry_commission - exit_commission
-            risk_amount = (pos.entry_fill - pos.stop_loss) * pos.shares
-            pnl_r_multiple = pnl_dollars / risk_amount if risk_amount > 0 else 0.0
-            hold_days = (exit_date - pos.entry_date).days
-            
-            trade_record = {
-                'symbol': sym,
-                'pattern_id': pos.pattern_id,
-                'entry_kind': pos.entry_kind,
-                'entry_date': pos.entry_date,
-                'entry_price': round(pos.entry_fill, 2),
-                'stop_loss': round(pos.stop_loss, 2),
-                'take_profit': round(pos.take_profit, 2),
-                'shares': pos.shares,
-                'exit_date': exit_date,
-                'exit_price': round(exit_price, 2),
-                'exit_reason': exit_reason,
-                'pnl_dollars': round(pnl_dollars, 2),
-                'pnl_r_multiple': round(pnl_r_multiple, 2),
-                'hold_days': hold_days,
-                'slippage_bps': pos.slippage_bps,
-                'commissions': round(pos.entry_commission + exit_commission, 2),
-                'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
-            }
+            trade_record = close_position(sym, pos, exit_date, exit_price, exit_reason)
             completed_trades.append(trade_record)
             
             del open_positions[sym]
@@ -234,10 +297,26 @@ def run_backtest(
                 continue
             
             if cfg.one_position_per_symbol and sym in open_positions:
+                skipped_symbol_already_open += 1
                 signal_idx += 1
                 continue
             
-            if len(open_positions) >= cfg.max_positions:
+            open_total = len(open_positions)
+            open_forming = sum(1 for p in open_positions.values() if p.entry_kind == "FORMING")
+            open_confirmed = sum(1 for p in open_positions.values() if p.entry_kind == "CONFIRMED")
+            
+            if open_total >= cfg.max_positions_total:
+                skipped_max_total += 1
+                signal_idx += 1
+                continue
+            
+            if signal.entry_kind == "FORMING" and open_forming >= cfg.max_positions_forming:
+                skipped_max_forming += 1
+                signal_idx += 1
+                continue
+            
+            if signal.entry_kind == "CONFIRMED" and open_confirmed >= cfg.max_positions_confirmed:
+                skipped_max_confirmed += 1
                 signal_idx += 1
                 continue
             
@@ -250,6 +329,7 @@ def run_backtest(
             stop_dist = entry_fill - signal.stop_loss
             
             if stop_dist <= 0:
+                skipped_invalid_sizing += 1
                 signal_idx += 1
                 continue
             
@@ -258,10 +338,16 @@ def run_backtest(
                 for pos in open_positions.values()
             )
             
-            risk_budget = cfg.risk_fraction_per_trade * current_equity
+            if signal.entry_kind == "CONFIRMED":
+                risk_fraction = cfg.risk_fraction_confirmed
+            else:
+                risk_fraction = cfg.risk_fraction_forming
+            
+            risk_budget = risk_fraction * current_equity
             shares = int(math.floor(risk_budget / stop_dist))
             
             if shares < 1:
+                skipped_invalid_sizing += 1
                 signal_idx += 1
                 continue
             
@@ -269,6 +355,7 @@ def run_backtest(
             if required_capital > cash:
                 shares = int((cash - cfg.commission_per_trade) / entry_fill)
                 if shares < 1:
+                    skipped_invalid_sizing += 1
                     signal_idx += 1
                     continue
             
@@ -282,6 +369,7 @@ def run_backtest(
                 entry_date=current_date,
                 entry_fill=entry_fill,
                 stop_loss=signal.stop_loss,
+                original_stop_loss=signal.stop_loss,
                 take_profit=signal.take_profit,
                 shares=shares,
                 entry_commission=entry_commission,
@@ -303,7 +391,10 @@ def run_backtest(
         equity_history.append({
             'date': current_date,
             'equity': round(total_equity, 2),
-            'drawdown_pct': round(drawdown_pct, 2)
+            'drawdown_pct': round(drawdown_pct, 2),
+            'open_positions': len(open_positions),
+            'open_forming': sum(1 for p in open_positions.values() if p.entry_kind == "FORMING"),
+            'open_confirmed': sum(1 for p in open_positions.values() if p.entry_kind == "CONFIRMED")
         })
     
     for sym, pos in list(open_positions.items()):
@@ -313,36 +404,29 @@ def run_backtest(
                 last_date = df.index[-1]
                 last_close = df['Close'].iloc[-1]
                 exit_price = last_close * (1 - cfg.slippage_bps / 10000)
-                exit_commission = cfg.commission_per_trade
-                
-                proceeds = exit_price * pos.shares - exit_commission
-                cash += proceeds
-                
-                pnl_dollars = (exit_price - pos.entry_fill) * pos.shares - pos.entry_commission - exit_commission
-                risk_amount = (pos.entry_fill - pos.stop_loss) * pos.shares
-                pnl_r_multiple = pnl_dollars / risk_amount if risk_amount > 0 else 0.0
-                hold_days = (last_date - pos.entry_date).days
-                
-                trade_record = {
-                    'symbol': sym,
-                    'pattern_id': pos.pattern_id,
-                    'entry_kind': pos.entry_kind,
-                    'entry_date': pos.entry_date,
-                    'entry_price': round(pos.entry_fill, 2),
-                    'stop_loss': round(pos.stop_loss, 2),
-                    'take_profit': round(pos.take_profit, 2),
-                    'shares': pos.shares,
-                    'exit_date': last_date,
-                    'exit_price': round(exit_price, 2),
-                    'exit_reason': 'EOD',
-                    'pnl_dollars': round(pnl_dollars, 2),
-                    'pnl_r_multiple': round(pnl_r_multiple, 2),
-                    'hold_days': hold_days,
-                    'slippage_bps': pos.slippage_bps,
-                    'commissions': round(pos.entry_commission + exit_commission, 2),
-                    'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
-                }
+                trade_record = close_position(sym, pos, last_date, exit_price, 'EOD')
                 completed_trades.append(trade_record)
+    
+    skip_counts = {
+        'skipped_max_total': skipped_max_total,
+        'skipped_max_forming': skipped_max_forming,
+        'skipped_max_confirmed': skipped_max_confirmed,
+        'skipped_symbol_already_open': skipped_symbol_already_open,
+        'skipped_invalid_sizing': skipped_invalid_sizing
+    }
+    
+    if any(skip_counts.values()):
+        print("\n  SKIP REASONS:")
+        if skipped_max_total > 0:
+            print(f"    - Max total positions: {skipped_max_total}")
+        if skipped_max_forming > 0:
+            print(f"    - Max FORMING positions: {skipped_max_forming}")
+        if skipped_max_confirmed > 0:
+            print(f"    - Max CONFIRMED positions: {skipped_max_confirmed}")
+        if skipped_symbol_already_open > 0:
+            print(f"    - Symbol already open: {skipped_symbol_already_open}")
+        if skipped_invalid_sizing > 0:
+            print(f"    - Invalid sizing: {skipped_invalid_sizing}")
     
     trades_df = pd.DataFrame(completed_trades)
     if not trades_df.empty:

@@ -410,6 +410,26 @@ def main():
     parser.add_argument('--symbols-cache-max-age-hours', type=int, default=24,
                        help='Max age in hours for cached NASDAQ symbol list')
     
+    parser.add_argument('--risk-confirmed', type=float, default=0.01,
+                       help='Risk fraction per CONFIRMED trade (0.01 = 1%%)')
+    parser.add_argument('--risk-forming', type=float, default=0.006,
+                       help='Risk fraction per FORMING trade (0.006 = 0.6%%)')
+    parser.add_argument('--max-positions-total', type=int, default=10,
+                       help='Maximum total open positions')
+    parser.add_argument('--max-positions-forming', type=int, default=3,
+                       help='Maximum concurrent FORMING positions')
+    parser.add_argument('--forming-max-hold-days', type=int, default=60,
+                       help='Maximum days to hold FORMING trades')
+    parser.add_argument('--forming-no-progress-days', type=int, default=20,
+                       help='Days before no-progress check for FORMING')
+    parser.add_argument('--forming-no-progress-r', type=float, default=0.5,
+                       help='MFE threshold for no-progress rule (0.5 = +0.5R)')
+    parser.add_argument('--forming-no-progress-action', type=str, default='EXIT',
+                       choices=['EXIT', 'TIGHTEN_STOP'],
+                       help='Action when FORMING shows no progress')
+    parser.add_argument('--confirmed-move-stop-to-be-at-r', type=float, default=0.5,
+                       help='Move CONFIRMED stop to BE at this MFE (0 to disable)')
+    
     args = parser.parse_args()
     
     config = DEFAULT_CONFIG.copy()
@@ -527,11 +547,21 @@ def main():
         
         cfg = BacktestConfig(
             initial_capital=args.initial_capital,
-            risk_fraction_per_trade=0.01,
-            max_positions=10,
+            risk_fraction_per_trade=args.risk_confirmed,
+            max_positions=args.max_positions_total,
             one_position_per_symbol=True,
             slippage_bps=5.0,
-            commission_per_trade=1.0
+            commission_per_trade=1.0,
+            risk_fraction_confirmed=args.risk_confirmed,
+            risk_fraction_forming=args.risk_forming,
+            max_positions_total=args.max_positions_total,
+            max_positions_forming=args.max_positions_forming,
+            max_positions_confirmed=args.max_positions_total,
+            forming_max_hold_days=args.forming_max_hold_days,
+            forming_no_progress_days=args.forming_no_progress_days,
+            forming_no_progress_r=args.forming_no_progress_r,
+            forming_no_progress_action=args.forming_no_progress_action,
+            confirmed_move_stop_to_be_at_r=args.confirmed_move_stop_to_be_at_r
         )
         
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)

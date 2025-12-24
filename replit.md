@@ -131,6 +131,14 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-24: Portfolio Rules Engine (Task 7)
+  - Kind-specific risk: CONFIRMED 1% vs FORMING 0.6% per trade
+  - Position caps: max 3 concurrent FORMING positions, 10 total
+  - FORMING exit rules: TIME (60 days), NO_PROGRESS (<0.5R after 20 days)
+  - CONFIRMED breakeven stop at +0.5R MFE
+  - Skip counters track rejected signals by reason
+  - CLI flags: --risk-confirmed, --risk-forming, --max-positions-forming, etc.
+  - Results: Max DD improved from -13% to -5%, FORMING hold days 84→30
 - 2025-12-23: Universe Expansion & Liquidity Filter (Task 6)
   - New universe.py module with NASDAQ symbol caching and liquidity filtering
   - get_nasdaq_symbols_cached() downloads and caches NASDAQ symbol list
