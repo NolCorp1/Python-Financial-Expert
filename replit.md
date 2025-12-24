@@ -131,6 +131,12 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-24: Walk-Forward v2 (Task 9)
+  - Expanded parameter grid: portfolio/exit knobs (risk_fraction_forming, max_positions_forming, FORMING exit rules, CONFIRMED partial TP/trailing)
+  - Composite scoring: trade-count penalty, exposure penalty, max DD constraint
+  - Enhanced diagnostics: train_trade_count, train_total_return_pct, test_exposure_days in CSV
+  - Stability summary v2: priority parameter win counts, aggregate stats
+  - New CLI: --objective composite, --min-trades-test 20, --min-exposure-days-test 20, --grid-size-limit 250
 - 2025-12-24: Exit Upgrades (Task 8)
   - CONFIRMED partial take profit: sell 50% at +1R, continue with remainder
   - ATR-based trailing stop: 2x ATR distance, activates after +1R or partial TP
