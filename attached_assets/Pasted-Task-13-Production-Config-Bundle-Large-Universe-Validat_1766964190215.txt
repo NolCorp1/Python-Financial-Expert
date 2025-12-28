@@ -1,0 +1,186 @@
+Task 13 — Production Config Bundle + Large-Universe Validation (200–800 symbols)
+================================================================================
+Objective
+---------
+Turn the optimizer output into a production-ready trading configuration and
+validate it on a larger universe with strict robustness constraints.
+
+You will implement:
+1) A canonical "strategy config" artifact written by optimize.py (JSON)
+2) A loader in main.py to run scans/backtests using that config (no CLI sprawl)
+3) Robustness gating in optimize.py: require stability + min window pass rate
+4) A large-universe validation run (200–800 symbols) that produces a final report:
+   - summary metrics
+   - splits (FORMING/CONFIRMED)
+   - regime attribution
+   - cluster/corr skip counts
+   - equity curve + trades
+
+Files to Edit
+-------------
+- optimize.py
+- main.py
+- (optional) metrics.py (add robustness summary helper)
+- (optional) replit.md (document “train -> validate -> run” workflow)
+
+Inputs You Already Have
+-----------------------
+- Task 9 walk-forward v2 with composite scoring + diagnostics
+- Task 10 corr/cluster caps
+- Task 11 regime filter (now optimized)
+- Task 12A universe hardening + 616 fallback list
+- Task 12B price_cache + fast batch downloads + parquet reuse
+
+1) Optimize.py: Write a Canonical Strategy Config JSON
+------------------------------------------------------
+Currently optimize.py outputs best params JSON, but it may not be in the exact
+structure needed to run main.py end-to-end.
+
+Implement:
+- outputs/strategy_best_config.json
+
+It must include ALL settings needed for a full run:
+A) detection params
+B) strategy signal params
+C) backtester portfolio params
+D) exit params
+E) corr/cluster params
+F) regime params
+G) universe/liquidity params (optional but useful)
+
+Add fields:
+- generated_at (timestamp)
+- universe_used (nasdaq/custom/demo)
+- max_stocks_used
+- train/test window settings (train_bars, test_bars, step_bars)
+- objective used + constraints (min trades, min exposure, dd limits)
+- grid sampling seed and grid-size-limit
+
+Acceptance Criteria:
+- strategy_best_config.json fully reproduces the selected configuration without CLI flags
+
+
+2) Main.py: Add --config to Run Using Best Config Artifact
+----------------------------------------------------------
+Add CLI:
+- --config outputs/strategy_best_config.json
+
+Behavior:
+- Load config JSON
+- Override default CLI values with config values
+- CLI args provided explicitly still override config (CLI wins)
+- Print "CONFIG LOADED" banner with config path + key values
+
+Run modes:
+- scanner run
+- backtest-v2 run
+
+Acceptance Criteria:
+- You can run:
+  python main.py --config outputs/strategy_best_config.json --universe nasdaq --max-stocks 300 --backtest-v2
+  and it uses the config values for detection/portfolio/exits/regime/caps
+
+
+3) Optimize.py: Add Robustness Gating (Prevent One-Off Winners)
+---------------------------------------------------------------
+Add additional selection rules at the end of walk-forward:
+
+A) Minimum pass rate:
+- require pct_windows_passing >= 60% (configurable)
+
+B) Minimum median performance:
+- require median_test_score > 0 (or median_test_return_pct > 0)
+
+C) Stability preference:
+- prefer configs with lower variance of test returns and DD
+- add tie-breaker: choose config with highest "median_test_score"
+
+Implement summary table per candidate config aggregated across windows:
+- mean/median return
+- mean/median dd
+- pass_rate
+- mean trades
+- mean exposure days
+- score variance
+
+Then select "best overall" using:
+1) pass_rate constraint
+2) maximize median score
+3) minimize drawdown variance as tie-break
+
+Add CLI knobs:
+- --min-pass-rate 0.60
+- --min-median-test-score 0.0
+
+Acceptance Criteria:
+- best config reflects stability, not a single spike window
+
+
+4) Add a Large-Universe Validation Script/Mode
+----------------------------------------------
+Add a new command (either a script or optimize.py mode):
+Option A: scripts/validate_best_config.py
+Option B: optimize.py --validate-best
+
+It should:
+- Load outputs/strategy_best_config.json
+- Run a full scan + signal gen + backtest on:
+  --universe nasdaq --max-stocks 300 (default)
+- Save outputs:
+  - outputs/validation_trades.csv
+  - outputs/validation_equity.csv
+  - outputs/validation_metrics.txt
+  - outputs/validation_summary.json
+
+Include in validation_metrics.txt:
+- ALL / FORMING / CONFIRMED metrics
+- correlation/cluster skip counters
+- regime days breakdown + effective risk multipliers usage
+- top 10 symbols by contribution to pnl
+- worst 10 symbols
+
+Acceptance Criteria:
+- Single command produces a complete validation pack for review
+
+
+5) Documentation Update (replit.md)
+-----------------------------------
+Add section:
+"Workflow: Optimize -> Validate -> Run"
+Commands:
+1) optimize (small)
+2) optimize (large)
+3) validate
+4) run live scan/backtest with config
+
+Acceptance Criteria:
+- New user can reproduce the full pipeline without guessing
+
+
+Manual Test Plan
+----------------
+1) Run optimization (200 symbols):
+python optimize.py --universe nasdaq --max-stocks 200 \
+  --train-bars 504 --test-bars 126 --step-bars 126 \
+  --objective composite --grid-size-limit 250 \
+  --min-trades-test 20 --min-exposure-days-test 20
+
+Confirm:
+- outputs/strategy_best_config.json exists
+
+2) Validate best config (300 symbols):
+python main.py --config outputs/strategy_best_config.json \
+  --universe nasdaq --max-stocks 300 --backtest-v2
+
+Confirm:
+- outputs/validation_* files exist (if you implement validate script)
+- metrics printed
+
+3) Re-run to ensure reproducibility (cache should make this fast).
+
+Non-Goals
+---------
+- Live brokerage execution
+- True portfolio optimization (mean-variance)
+- Regime research beyond MA/ATR
+Those are later.
