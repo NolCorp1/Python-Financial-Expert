@@ -466,6 +466,31 @@ def main():
     parser.add_argument('--max-positions-per-cluster', type=int, default=2,
                        help='Max positions allowed per cluster')
     
+    parser.add_argument('--use-regime-filter', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Enable market regime filter')
+    parser.add_argument('--regime-symbol', type=str, default='QQQ',
+                       help='Symbol for regime detection (QQQ or SPY)')
+    parser.add_argument('--regime-fast-ma', type=int, default=50,
+                       help='Fast MA period for trend detection')
+    parser.add_argument('--regime-slow-ma', type=int, default=200,
+                       help='Slow MA period for trend detection')
+    parser.add_argument('--regime-vol-lookback', type=int, default=20,
+                       help='ATR lookback for volatility detection')
+    parser.add_argument('--regime-vol-high-threshold', type=float, default=0.03,
+                       help='ATR%% threshold for high volatility (0.03 = 3%%)')
+    parser.add_argument('--regime-disable-forming-in-downtrend', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Disable FORMING signals in downtrend')
+    parser.add_argument('--regime-disable-forming-in-high-vol', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Disable FORMING signals in high volatility')
+    parser.add_argument('--regime-reduce-risk-in-high-vol', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Reduce risk in high volatility')
+    parser.add_argument('--regime-high-vol-risk-multiplier', type=float, default=0.70,
+                       help='Risk multiplier in high volatility (0.7 = 70%%)')
+    
     args = parser.parse_args()
     
     config = DEFAULT_CONFIG.copy()
@@ -559,8 +584,13 @@ def main():
         print(f"Initial Capital: ${args.initial_capital:,.2f}")
         print("="*60)
         
+        symbols_with_regime = list(symbols)
+        regime_symbol = args.regime_symbol.upper()
+        if args.use_regime_filter.lower() == 'true' and regime_symbol not in symbols_with_regime:
+            symbols_with_regime.append(regime_symbol)
+        
         results, price_data = scan_stocks_with_liquidity(
-            symbols, config, 
+            symbols_with_regime, config, 
             use_liquidity_filter=use_liquidity_filter,
             liquidity_config=liquidity_config,
             verbose=not args.quiet
@@ -570,8 +600,13 @@ def main():
             print("\nNo patterns found. Cannot run backtest.")
             return results
         
+        if args.use_regime_filter.lower() == 'true':
+            results = results[results['symbol'] != regime_symbol]
+        
         all_signals = []
         for sym in price_data:
+            if args.use_regime_filter.lower() == 'true' and sym == regime_symbol:
+                continue
             df = price_data[sym]
             patterns = results[results['symbol'] == sym].to_dict('records')
             signals = generate_signals(df, patterns)
@@ -611,7 +646,17 @@ def main():
             max_corr_to_existing=args.max_corr_to_existing,
             use_cluster_caps=args.use_cluster_caps.lower() == 'true',
             n_clusters=args.n_clusters,
-            max_positions_per_cluster=args.max_positions_per_cluster
+            max_positions_per_cluster=args.max_positions_per_cluster,
+            use_regime_filter=args.use_regime_filter.lower() == 'true',
+            regime_symbol=args.regime_symbol.upper(),
+            regime_trend_fast_ma=args.regime_fast_ma,
+            regime_trend_slow_ma=args.regime_slow_ma,
+            regime_vol_lookback=args.regime_vol_lookback,
+            regime_vol_high_threshold=args.regime_vol_high_threshold,
+            regime_disable_forming_in_downtrend=args.regime_disable_forming_in_downtrend.lower() == 'true',
+            regime_disable_forming_in_high_vol=args.regime_disable_forming_in_high_vol.lower() == 'true',
+            regime_reduce_risk_in_high_vol=args.regime_reduce_risk_in_high_vol.lower() == 'true',
+            regime_high_vol_risk_multiplier=args.regime_high_vol_risk_multiplier
         )
         
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)

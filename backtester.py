@@ -84,6 +84,17 @@ class BacktestConfig:
     use_cluster_caps: bool = True
     n_clusters: int = 8
     max_positions_per_cluster: int = 2
+    
+    use_regime_filter: bool = True
+    regime_symbol: str = "QQQ"
+    regime_trend_fast_ma: int = 50
+    regime_trend_slow_ma: int = 200
+    regime_vol_lookback: int = 20
+    regime_vol_high_threshold: float = 0.03
+    regime_disable_forming_in_downtrend: bool = True
+    regime_disable_forming_in_high_vol: bool = True
+    regime_reduce_risk_in_high_vol: bool = True
+    regime_high_vol_risk_multiplier: float = 0.70
 
 
 @dataclass
@@ -149,6 +160,39 @@ def compute_atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
     atr = tr.rolling(window=length, min_periods=1).mean()
     
     return atr
+
+
+def compute_regime(df_regime: pd.DataFrame, cfg: 'BacktestConfig') -> pd.DataFrame:
+    """
+    Compute market regime (trend + volatility) with no-lookahead (1-bar shift).
+    
+    Args:
+        df_regime: OHLCV DataFrame for regime symbol (QQQ/SPY)
+        cfg: BacktestConfig with regime parameters
+        
+    Returns:
+        DataFrame with:
+        - trend_signal: "UP" or "DOWN" (shifted by 1 bar)
+        - atr_pct: ATR as percentage of close (shifted by 1 bar)
+        - vol_signal: "HIGH" or "NORMAL" (shifted by 1 bar)
+    """
+    close = df_regime['Close']
+    
+    fast_ma = close.rolling(window=cfg.regime_trend_fast_ma, min_periods=1).mean()
+    slow_ma = close.rolling(window=cfg.regime_trend_slow_ma, min_periods=1).mean()
+    trend = (fast_ma > slow_ma).map({True: "UP", False: "DOWN"})
+    
+    atr = compute_atr(df_regime, length=cfg.regime_vol_lookback)
+    atr_pct = atr / close
+    vol = (atr_pct > cfg.regime_vol_high_threshold).map({True: "HIGH", False: "NORMAL"})
+    
+    regime_df = pd.DataFrame({
+        'trend_signal': trend.shift(1),
+        'atr_pct': atr_pct.shift(1),
+        'vol_signal': vol.shift(1)
+    }, index=df_regime.index)
+    
+    return regime_df
 
 
 def compute_returns_matrix(price_data_by_symbol: Dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -269,9 +313,17 @@ def run_backtest(
     skipped_invalid_sizing = 0
     skipped_corr_cap = 0
     skipped_cluster_cap = 0
+    skipped_regime_forming_downtrend = 0
+    skipped_regime_forming_highvol = 0
     
     corr_matrix = pd.DataFrame()
     clusters: Dict[str, int] = {}
+    
+    regime_df = pd.DataFrame()
+    if cfg.use_regime_filter and cfg.regime_symbol in price_data_by_symbol:
+        df_regime = price_data_by_symbol[cfg.regime_symbol]
+        if len(df_regime) > 0:
+            regime_df = compute_regime(df_regime, cfg)
     
     all_signals = []
     for sym, sigs in signals_by_symbol.items():
@@ -549,6 +601,24 @@ def run_backtest(
                     signal_idx += 1
                     continue
             
+            current_trend = None
+            current_vol = None
+            if cfg.use_regime_filter and len(regime_df) > 0:
+                if current_date in regime_df.index:
+                    current_trend = regime_df.loc[current_date, 'trend_signal']
+                    current_vol = regime_df.loc[current_date, 'vol_signal']
+                
+                if signal.entry_kind == "FORMING":
+                    if cfg.regime_disable_forming_in_downtrend and current_trend == "DOWN":
+                        skipped_regime_forming_downtrend += 1
+                        signal_idx += 1
+                        continue
+                    
+                    if cfg.regime_disable_forming_in_high_vol and current_vol == "HIGH":
+                        skipped_regime_forming_highvol += 1
+                        signal_idx += 1
+                        continue
+            
             if not cfg.allow_same_day_reentry:
                 if current_date in exited_today and sym in exited_today[current_date]:
                     signal_idx += 1
@@ -571,6 +641,9 @@ def run_backtest(
                 risk_fraction = cfg.risk_fraction_confirmed
             else:
                 risk_fraction = cfg.risk_fraction_forming
+            
+            if cfg.use_regime_filter and cfg.regime_reduce_risk_in_high_vol and current_vol == "HIGH":
+                risk_fraction *= cfg.regime_high_vol_risk_multiplier
             
             risk_budget = risk_fraction * current_equity
             shares = int(math.floor(risk_budget / stop_dist))
@@ -645,7 +718,9 @@ def run_backtest(
         'skipped_symbol_already_open': skipped_symbol_already_open,
         'skipped_invalid_sizing': skipped_invalid_sizing,
         'skipped_corr_cap': skipped_corr_cap,
-        'skipped_cluster_cap': skipped_cluster_cap
+        'skipped_cluster_cap': skipped_cluster_cap,
+        'skipped_regime_forming_downtrend': skipped_regime_forming_downtrend,
+        'skipped_regime_forming_highvol': skipped_regime_forming_highvol
     }
     
     if any(skip_counts.values()):
@@ -660,6 +735,10 @@ def run_backtest(
             print(f"    - Correlation cap: {skipped_corr_cap}")
         if skipped_cluster_cap > 0:
             print(f"    - Cluster cap: {skipped_cluster_cap}")
+        if skipped_regime_forming_downtrend > 0:
+            print(f"    - Regime downtrend (FORMING): {skipped_regime_forming_downtrend}")
+        if skipped_regime_forming_highvol > 0:
+            print(f"    - Regime high vol (FORMING): {skipped_regime_forming_highvol}")
         if skipped_symbol_already_open > 0:
             print(f"    - Symbol already open: {skipped_symbol_already_open}")
         if skipped_invalid_sizing > 0:
