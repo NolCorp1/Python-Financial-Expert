@@ -31,10 +31,17 @@ from universe import (
     get_nasdaq_symbols_cached,
     get_demo_symbols,
     passes_liquidity_filter,
+    refresh_symbol_cache,
 )
 from strategy import generate_signals
 from backtester import run_backtest, BacktestConfig, group_signals_by_symbol
 from metrics import compute_trade_metrics, compute_equity_metrics, compute_split_metrics
+from price_cache import (
+    preload_price_data,
+    compute_required_date_range,
+    clear_price_cache,
+    get_cache_stats,
+)
 
 
 def build_walkforward_windows(
@@ -928,7 +935,10 @@ def run_walkforward_optimization(
     grid_size_limit: int = 250,
     initial_capital: float = 100000.0,
     verbose: bool = True,
-    liquidity_config: Optional[Dict[str, Any]] = None
+    liquidity_config: Optional[Dict[str, Any]] = None,
+    use_price_cache: bool = True,
+    price_cache_dir: str = "data/price_cache",
+    download_batch_size: int = 50,
 ) -> Tuple[pd.DataFrame, Dict[str, Any], str]:
     """
     Run complete walk-forward optimization v2.
@@ -969,17 +979,45 @@ def run_walkforward_optimization(
     
     use_liquidity = liquidity_config.get('use_filter', True)
     
-    print("\nStep 1: Downloading price data...")
-    price_data = {}
-    download_years = max(5, (train_bars + test_bars * 3) // 252 + 1)
+    print("\nStep 1: Downloading price data (batch mode)...")
+    
+    all_symbols = list(symbols) + ['QQQ', 'SPY']
+    all_symbols = list(dict.fromkeys(all_symbols))
+    
+    start_date, end_date = compute_required_date_range(
+        train_bars=train_bars,
+        test_bars=test_bars,
+        step_bars=step_bars,
+        n_windows=10,
+        buffer_bars=50
+    )
+    
+    if use_price_cache:
+        cache_stats = get_cache_stats(price_cache_dir)
+        if cache_stats.get('count', 0) > 0:
+            print(f"Price cache: {cache_stats['count']} files, {cache_stats['size_mb']:.1f} MB")
+    
+    raw_price_data = preload_price_data(
+        symbols=all_symbols,
+        start_date=start_date,
+        end_date=end_date,
+        use_cache=use_price_cache,
+        cache_dir=price_cache_dir,
+        batch_size=download_batch_size,
+        verbose=verbose
+    )
     
     n_total = len(symbols)
     n_no_data = 0
     n_failed_liq = 0
+    price_data = {}
     
-    iterator = tqdm(symbols, desc="Downloading & filtering") if verbose else symbols
-    for symbol in iterator:
-        df = download_stock_data(symbol, years=download_years)
+    for symbol in symbols:
+        if symbol not in raw_price_data:
+            n_no_data += 1
+            continue
+        
+        df = raw_price_data[symbol]
         if df is None or len(df) <= train_bars:
             n_no_data += 1
             continue
@@ -1003,10 +1041,9 @@ def run_walkforward_optimization(
         print("ERROR: No valid price data downloaded")
         return pd.DataFrame(), {}, "No data available"
     
-    regime_symbols = ['QQQ', 'SPY']
-    for regime_sym in regime_symbols:
-        if regime_sym not in price_data:
-            df = download_stock_data(regime_sym, years=download_years)
+    for regime_sym in ['QQQ', 'SPY']:
+        if regime_sym in raw_price_data and regime_sym not in price_data:
+            df = raw_price_data[regime_sym]
             if df is not None and len(df) > train_bars:
                 price_data[regime_sym] = df
                 print(f"Added regime symbol {regime_sym} for regime filter")
@@ -1168,7 +1205,24 @@ def main():
     parser.add_argument('--liquidity-window', type=int, default=20,
                        help='Lookback window for avg dollar volume calculation')
     
+    parser.add_argument('--refresh-symbol-cache', action='store_true',
+                       help='Force refresh of NASDAQ symbol cache before running')
+    parser.add_argument('--price-cache-dir', type=str, default='data/price_cache',
+                       help='Directory for parquet price cache')
+    parser.add_argument('--download-batch-size', type=int, default=50,
+                       help='Number of symbols per yfinance batch download (50-75 recommended)')
+    parser.add_argument('--disable-price-cache', action='store_true',
+                       help='Disable price data caching (download fresh each run)')
+    parser.add_argument('--clear-price-cache', action='store_true',
+                       help='Clear price cache before running')
+    
     args = parser.parse_args()
+    
+    if args.refresh_symbol_cache:
+        refresh_symbol_cache()
+    
+    if args.clear_price_cache:
+        clear_price_cache(args.price_cache_dir)
     
     if args.universe == 'nasdaq':
         symbols = get_nasdaq_symbols_cached(limit=args.max_stocks)
@@ -1199,7 +1253,10 @@ def main():
         min_exposure_days_test=args.min_exposure_days_test,
         grid_size_limit=args.grid_size_limit,
         initial_capital=args.initial_capital,
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        use_price_cache=not args.disable_price_cache,
+        price_cache_dir=args.price_cache_dir,
+        download_batch_size=args.download_batch_size,
     )
     
     os.makedirs('outputs', exist_ok=True)

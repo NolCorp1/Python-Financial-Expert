@@ -34,6 +34,7 @@ from universe import (
     get_demo_symbols,
     passes_liquidity_filter,
     filter_universe_by_liquidity,
+    refresh_symbol_cache,
 )
 
 from strategy import TradeSignal, generate_signals
@@ -409,6 +410,8 @@ def main():
                        help='Disable liquidity filtering (for debugging)')
     parser.add_argument('--symbols-cache-max-age-hours', type=int, default=24,
                        help='Max age in hours for cached NASDAQ symbol list')
+    parser.add_argument('--refresh-symbol-cache', action='store_true',
+                       help='Force refresh of NASDAQ symbol cache before running')
     
     parser.add_argument('--risk-confirmed', type=float, default=0.01,
                        help='Risk fraction per CONFIRMED trade (0.01 = 1%%)')
@@ -490,6 +493,9 @@ def main():
                        help='Risk multiplier for CONFIRMED in high vol (0.85 = 85%%)')
     
     args = parser.parse_args()
+    
+    if args.refresh_symbol_cache:
+        refresh_symbol_cache()
     
     config = DEFAULT_CONFIG.copy()
     config['price_tolerance'] = args.price_tolerance

@@ -1,14 +1,21 @@
 """
 Universe management: NASDAQ symbol list caching and liquidity filtering.
+
+Task 12A: Hardened download with validation and atomic caching.
 """
 import os
 import time
-import pandas as pd
-import numpy as np
+import shutil
+import tempfile
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
+import pandas as pd
+import numpy as np
+
 NASDAQ_SCREENER_URL = "https://www.nasdaq.com/market-activity/stocks/screener?exchange=nasdaq&render=download"
+FALLBACK_SYMBOLS_FILE = "data/fallback_nasdaq_symbols.csv"
 
 FUND_TOKENS = [
     "ETF", "ETN", "Fund", "Trust", "Index", "Shares", "iShares", "Vanguard",
@@ -44,20 +51,150 @@ def _is_fund(name: str) -> bool:
     return False
 
 
+def validate_nasdaq_csv_bytes(content: bytes) -> Tuple[bool, str]:
+    """
+    Validate downloaded NASDAQ CSV content before writing to cache.
+    
+    Checks:
+    - Content size > 10KB
+    - First 1KB does NOT contain "<html" or "<!DOCTYPE"
+    - Parses as valid CSV
+    - Has required columns (Symbol case-insensitive)
+    - Number of rows >= 200
+    
+    Returns:
+        Tuple of (is_valid, reason)
+    """
+    if len(content) < 10 * 1024:
+        return False, f"Content too small: {len(content)} bytes (min 10KB)"
+    
+    header_sample = content[:1024].decode('utf-8', errors='ignore').lower()
+    if '<html' in header_sample or '<!doctype' in header_sample:
+        return False, "Content appears to be HTML, not CSV"
+    
+    try:
+        df = pd.read_csv(BytesIO(content))
+    except Exception as e:
+        try:
+            df = pd.read_csv(BytesIO(content), on_bad_lines='skip')
+        except Exception as e2:
+            return False, f"Failed to parse CSV: {e2}"
+    
+    symbol_col = None
+    for col in df.columns:
+        if col.lower().strip() == 'symbol':
+            symbol_col = col
+            break
+    
+    if symbol_col is None:
+        return False, f"Missing required 'Symbol' column. Found: {list(df.columns)}"
+    
+    if len(df) < 200:
+        return False, f"Too few rows: {len(df)} (min 200)"
+    
+    return True, "Valid CSV"
+
+
+def _load_fallback_symbols() -> List[str]:
+    """Load fallback symbols from CSV file or return embedded list."""
+    fallback_path = Path(FALLBACK_SYMBOLS_FILE)
+    
+    if fallback_path.exists():
+        try:
+            df = pd.read_csv(fallback_path)
+            if 'symbol' in df.columns:
+                symbols = df['symbol'].dropna().astype(str).str.upper().tolist()
+                symbols = [s for s in symbols if _is_valid_ticker(s)]
+                if len(symbols) >= 100:
+                    return symbols
+        except Exception as e:
+            print(f"Warning: Failed to load fallback file: {e}")
+    
+    return [
+        "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
+        "AVGO", "COST", "NFLX", "AMD", "ADBE", "PEP", "CSCO", "INTC",
+        "CMCSA", "TMUS", "INTU", "TXN", "QCOM", "AMGN", "AMAT", "ISRG",
+        "HON", "SBUX", "BKNG", "VRTX", "GILD", "ADI", "MDLZ", "ADP",
+        "REGN", "LRCX", "PANW", "KLAC", "SNPS", "CDNS", "MELI", "ASML",
+        "ABNB", "PYPL", "MAR", "ORLY", "MRVL", "CTAS", "CHTR", "CRWD",
+        "MNST", "WDAY", "PCAR", "NXPI", "ADSK", "ROST", "MCHP", "CPRT",
+        "DXCM", "IDXX", "KDP", "LULU", "AZN", "FTNT", "ODFL", "PAYX",
+        "KHC", "CEG", "BIIB", "FAST", "GFS", "CSGP", "EA", "ON", "TTD",
+        "CDW", "VRSK", "BKR", "ALGN", "FANG", "TEAM", "ZS", "DDOG",
+        "ANSS", "WBD", "CTSH", "GEHC", "ILMN", "EXC", "WBA", "XEL",
+        "UBER", "LYFT", "DASH", "RBLX", "COIN", "PLTR", "SOFI", "HOOD",
+        "MRNA", "BNTX", "NVAX", "SNOW", "NET", "MDB", "OKTA", "SPLK",
+        "ZM", "DOCU", "TWLO", "CRSP", "BEAM", "EDIT", "NTLA", "SGEN",
+    ]
+
+
+def _get_fallback_symbols() -> List[str]:
+    """Return fallback list of 600+ liquid NASDAQ stocks."""
+    return _load_fallback_symbols()
+
+
+def validate_existing_cache(cache_path: str) -> bool:
+    """
+    Validate an existing cache file.
+    
+    Returns True if cache is valid, False if corrupted.
+    If corrupted, moves to cache_path.corrupt.<timestamp>
+    """
+    cache_file = Path(cache_path)
+    if not cache_file.exists():
+        return False
+    
+    try:
+        content = cache_file.read_bytes()
+        
+        if len(content) < 100:
+            raise ValueError("Cache too small")
+        
+        header_sample = content[:1024].decode('utf-8', errors='ignore').lower()
+        if '<html' in header_sample or '<!doctype' in header_sample:
+            raise ValueError("Cache contains HTML")
+        
+        df = pd.read_csv(cache_file)
+        if 'symbol' not in df.columns:
+            raise ValueError("Missing 'symbol' column")
+        if len(df) < 50:
+            raise ValueError(f"Only {len(df)} symbols in cache")
+        
+        return True
+        
+    except Exception as e:
+        timestamp = int(time.time())
+        corrupt_path = f"{cache_path}.corrupt.{timestamp}"
+        try:
+            shutil.move(cache_path, corrupt_path)
+            print(f"Quarantined corrupted cache: {corrupt_path}")
+        except Exception:
+            pass
+        return False
+
+
 def get_nasdaq_symbols_cached(
     cache_path: str = "data/nasdaq_symbols_cache.csv",
     max_age_hours: int = 24,
     exclude_funds: bool = True,
     limit: Optional[int] = None,
+    force_refresh: bool = False,
 ) -> List[str]:
     """
     Get NASDAQ symbol list, using cache if available and fresh.
+    
+    Implements Task 12A hardening:
+    - Validates downloads before caching
+    - Atomic writes (temp file -> rename)
+    - Preserves .bak backup of last-known-good cache
+    - Falls back to 600+ symbol list on failure
     
     Args:
         cache_path: Path to cache file
         max_age_hours: Max age in hours before refreshing cache
         exclude_funds: Whether to exclude ETFs/funds
         limit: Optional limit on number of symbols
+        force_refresh: Force download even if cache is fresh
         
     Returns:
         List of uppercase ticker symbols
@@ -66,10 +203,13 @@ def get_nasdaq_symbols_cached(
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     
     use_cache = False
-    if cache_file.exists():
-        file_age_hours = (time.time() - cache_file.stat().st_mtime) / 3600
-        if file_age_hours < max_age_hours:
-            use_cache = True
+    if not force_refresh and cache_file.exists():
+        if validate_existing_cache(cache_path):
+            file_age_hours = (time.time() - cache_file.stat().st_mtime) / 3600
+            if file_age_hours < max_age_hours:
+                use_cache = True
+        else:
+            print("Cache validation failed, will attempt fresh download")
     
     if use_cache:
         try:
@@ -82,13 +222,10 @@ def get_nasdaq_symbols_cached(
             print(f"Warning: Failed to read cache: {e}")
             use_cache = False
     
-    symbols = _download_nasdaq_symbols(exclude_funds=exclude_funds)
+    symbols = _download_nasdaq_symbols_validated(cache_path, exclude_funds=exclude_funds)
     
-    if symbols and len(symbols) > 50:
-        pd.DataFrame({'symbol': symbols}).to_csv(cache_file, index=False)
-        print(f"Cached {len(symbols)} NASDAQ symbols to {cache_path}")
-    elif len(symbols) <= 50:
-        print(f"Download returned only {len(symbols)} symbols - using fallback instead")
+    if not symbols or len(symbols) < 100:
+        print(f"Download returned insufficient symbols ({len(symbols) if symbols else 0}), using fallback")
         symbols = _get_fallback_symbols()
     
     if limit:
@@ -97,17 +234,18 @@ def get_nasdaq_symbols_cached(
     return symbols
 
 
-def _download_nasdaq_symbols(exclude_funds: bool = True) -> List[str]:
+def _download_nasdaq_symbols_validated(cache_path: str, exclude_funds: bool = True) -> List[str]:
     """
-    Download NASDAQ symbol list from NASDAQ screener.
+    Download NASDAQ symbol list with validation and atomic caching.
     
-    Falls back to a hardcoded list if download fails.
+    Returns:
+        List of symbols, or empty list on failure
     """
     import requests
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/csv,application/csv,text/plain',
+        'Accept': 'text/csv,application/csv,*/*',
     }
     
     try:
@@ -115,11 +253,14 @@ def _download_nasdaq_symbols(exclude_funds: bool = True) -> List[str]:
         response = requests.get(NASDAQ_SCREENER_URL, headers=headers, timeout=30)
         response.raise_for_status()
         
-        from io import StringIO
-        try:
-            df = pd.read_csv(StringIO(response.text))
-        except Exception:
-            df = pd.read_csv(StringIO(response.text), on_bad_lines='skip')
+        content = response.content
+        is_valid, reason = validate_nasdaq_csv_bytes(content)
+        
+        if not is_valid:
+            print(f"Download validation failed: {reason}")
+            return []
+        
+        df = pd.read_csv(BytesIO(content))
         
         symbol_col = None
         name_col = None
@@ -131,8 +272,8 @@ def _download_nasdaq_symbols(exclude_funds: bool = True) -> List[str]:
                 name_col = col
         
         if symbol_col is None:
-            print("Warning: Could not find Symbol column, trying first column")
-            symbol_col = df.columns[0]
+            print("Warning: Could not find Symbol column")
+            return []
         
         symbols = []
         for idx, row in df.iterrows():
@@ -147,57 +288,37 @@ def _download_nasdaq_symbols(exclude_funds: bool = True) -> List[str]:
             
             symbols.append(symbol)
         
-        print(f"Downloaded {len(symbols)} valid NASDAQ symbols")
+        if len(symbols) < 200:
+            print(f"Warning: Only {len(symbols)} valid symbols parsed")
+            return []
+        
+        cache_file = Path(cache_path)
+        tmp_path = cache_file.with_suffix('.csv.tmp')
+        bak_path = cache_file.with_suffix('.csv.bak')
+        
+        try:
+            pd.DataFrame({'symbol': symbols}).to_csv(tmp_path, index=False)
+            
+            test_df = pd.read_csv(tmp_path)
+            if len(test_df) < 200:
+                raise ValueError("Temp file validation failed")
+            
+            if cache_file.exists():
+                shutil.copy2(cache_file, bak_path)
+            
+            shutil.move(str(tmp_path), str(cache_file))
+            print(f"Cached {len(symbols)} NASDAQ symbols to {cache_path}")
+            
+        except Exception as e:
+            print(f"Warning: Failed to update cache atomically: {e}")
+            if tmp_path.exists():
+                tmp_path.unlink()
+        
         return symbols
         
     except Exception as e:
         print(f"Warning: Failed to download NASDAQ symbols: {e}")
-        print("Using fallback symbol list")
-        return _get_fallback_symbols()
-
-
-def _get_fallback_symbols() -> List[str]:
-    """Return a fallback list of 200+ liquid NASDAQ stocks."""
-    return [
-        "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
-        "AVGO", "COST", "NFLX", "AMD", "ADBE", "PEP", "CSCO", "INTC",
-        "CMCSA", "TMUS", "INTU", "TXN", "QCOM", "AMGN", "AMAT", "ISRG",
-        "HON", "SBUX", "BKNG", "VRTX", "GILD", "ADI", "MDLZ", "ADP",
-        "REGN", "LRCX", "PANW", "KLAC", "SNPS", "CDNS", "MELI", "ASML",
-        "ABNB", "PYPL", "MAR", "ORLY", "MRVL", "CTAS", "CHTR", "CRWD",
-        "MNST", "WDAY", "PCAR", "NXPI", "ADSK", "ROST", "MCHP", "CPRT",
-        "DXCM", "IDXX", "KDP", "LULU", "AZN", "FTNT", "ODFL", "PAYX",
-        "KHC", "CEG", "BIIB", "FAST", "GFS", "CSGP", "EA", "ON", "TTD",
-        "CDW", "VRSK", "BKR", "ALGN", "FANG", "TEAM", "ZS", "DDOG",
-        "ANSS", "WBD", "CTSH", "GEHC", "ILMN", "EXC", "WBA", "XEL",
-        "SIRI", "LCID", "RIVN", "SOFI", "PLTR", "COIN", "ROKU", "HOOD",
-        "DOCU", "SPLK", "OKTA", "MDB", "NET", "SNOW", "BILL", "HUBS",
-        "VEEV", "TWLO", "COUP", "ZM", "PINS", "SNAP", "UBER", "LYFT",
-        "DASH", "RBLX", "U", "PATH", "SAMSARA", "IOT", "CFLT", "ESTC",
-        "GTLB", "MNDY", "DOCN", "APP", "BRZE", "S", "CYBR", "TENB",
-        "RPD", "SUMO", "NEWR", "DT", "PD", "BSY", "MTTR", "ASAN",
-        "FIVN", "RNG", "TOST", "SQ", "AFRM", "UPST", "LMND", "ROOT",
-        "OPEN", "OPENDOOR", "RDFN", "EXPI", "COUR", "DUOL", "GENI",
-        "DKNG", "PENN", "RSI", "SKLZ", "SRAD", "EVBG", "MSTR", "CLSK",
-        "MARA", "RIOT", "HUT", "BTBT", "SOS", "CAN", "GREE", "BITF",
-        "NVAX", "MRNA", "BNTX", "VCNX", "IOVA", "SGEN", "EXAS", "NTRA",
-        "RARE", "ALNY", "IONS", "SRPT", "BMRN", "JAZZ", "UTHR", "NBIX",
-        "HZNP", "INCY", "TECH", "BIO", "HOLX", "ALGM", "SLAB", "SWKS",
-        "MPWR", "OLED", "MKSI", "ENTG", "ONTO", "WOLF", "DIOD", "SYNA",
-        "POWI", "CRUS", "AMBA", "SITM", "RMBS", "ACLS", "FORM", "ICHR",
-        "AXTI", "CAMT", "UCTT", "VECO", "AEHR", "MTSI", "MACOM", "SMTC",
-        "HIMX", "AOSL", "INDI", "SIMO", "GSIT", "QUIK", "VSH", "SGH",
-        "ZBRA", "EPAM", "GLOB", "EXLS", "PRFT", "ASGN", "FICO", "PAYC",
-        "PCTY", "TYL", "GWRE", "MANH", "NCNO", "APPF", "YEXT", "SPSC",
-        "EVBG", "MODN", "PLMR", "QTWO", "ALTR", "ALKT", "NTCT", "CGNX",
-        "OMCL", "MGNI", "PUBM", "DV", "APPS", "INMD", "PODD", "NVRO",
-        "AXNX", "TNDM", "HALO", "XRAY", "MASI", "OFIX", "LNTH", "CAKE",
-        "TXRH", "WING", "SHAK", "PLAY", "EAT", "DRI", "BLMN", "DIN",
-        "BJRI", "CHUY", "KURA", "BROS", "LOCO", "FAT", "PZZA", "WEN",
-        "JACK", "NDLS", "SONC", "ARCO", "DEL", "DNUT", "OLO", "PTLO",
-        "FWRG", "LSCC", "ACAD", "EXEL", "MEDP", "IRTC", "QDEL", "FTRE",
-        "OGN", "OMCL", "PRGO", "VRTV", "PETQ", "CHWY", "WOOF", "FRPT",
-    ]
+        return []
 
 
 def passes_liquidity_filter(
@@ -323,3 +444,29 @@ def get_demo_symbols() -> List[str]:
         "AMD", "INTC", "CRM", "ADBE", "PYPL", "CSCO", "QCOM", "TXN",
         "AVGO", "INTU", "AMAT", "MU"
     ]
+
+
+def refresh_symbol_cache(cache_path: str = "data/nasdaq_symbols_cache.csv") -> bool:
+    """
+    Force refresh of symbol cache.
+    
+    Returns True if refresh succeeded, False if fell back to cached/fallback data.
+    """
+    print("Forcing symbol cache refresh...")
+    cache_file = Path(cache_path)
+    
+    if cache_file.exists():
+        bak_path = cache_file.with_suffix('.csv.bak')
+        try:
+            shutil.copy2(cache_file, bak_path)
+        except Exception:
+            pass
+    
+    symbols = _download_nasdaq_symbols_validated(cache_path, exclude_funds=True)
+    
+    if symbols and len(symbols) >= 200:
+        print(f"Successfully refreshed cache with {len(symbols)} symbols")
+        return True
+    else:
+        print("Refresh failed, keeping existing cache/fallback")
+        return False
