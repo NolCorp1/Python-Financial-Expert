@@ -1,0 +1,158 @@
+Task 12 — Walk-Forward v3 (Regime Optimization + OFF vs ON Validation)
+==============================================================================
+Objective
+---------
+Determine (out-of-sample) whether the market regime filter helps or hurts,
+and if it helps, which configuration is best (hard skip vs soft gate vs off).
+
+This task extends optimize.py to:
+1) Include regime parameters in the optimization grid (small, controlled ranges)
+2) Treat "regime OFF" as a first-class candidate
+3) Report regime attribution per window (downtrend/highvol days, skips, effective risk)
+4) Choose defaults based on OOS composite scoring, not a single sample run
+
+Files to Edit
+-------------
+- optimize.py
+- (optional) backtester.py (ONLY if you need extra counters returned)
+- (optional) metrics.py (only if you want extra scoring helper)
+
+Pre-Req
+-------
+Task 11 regime filter already exists in backtester:
+- Trend via MA cross (fast/slow)
+- Vol via ATR% threshold
+- Signals shifted 1 bar (no-lookahead)
+- FORMING gating and/or risk reduction available
+
+Task 9 optimizer exists:
+- Composite scoring
+- Grid size limiting
+- Enhanced diagnostics output
+
+1) Add Regime "Mode" to the Parameter Grid (OFF / HARD_SKIP / SOFT_GATE)
+------------------------------------------------------------------------
+In optimize.py define a regime mode key:
+
+- regime_mode: ["OFF", "HARD_SKIP", "SOFT_GATE"]
+
+Interpretation:
+- OFF:
+    use_regime_filter = False
+- HARD_SKIP:
+    use_regime_filter = True
+    disable FORMING in downtrend/high-vol (skip)
+    apply high-vol risk multiplier (keep existing)
+- SOFT_GATE:
+    use_regime_filter = True
+    do NOT skip FORMING; apply risk multipliers instead (downtrend/high-vol)
+    confirmed may also use risk multiplier in high-vol
+
+NOTE:
+If your code currently only supports one of these at a time, implement branching
+in optimize.py by setting config flags appropriately.
+
+2) Add Regime Parameters (Small Ranges)
+---------------------------------------
+Only when regime_mode != "OFF", include:
+
+Trend:
+- regime_symbol: ["QQQ"]  (keep single to reduce variance)
+- regime_trend_fast_ma: [20, 50]
+- regime_trend_slow_ma: [150, 200]
+
+Volatility:
+- regime_vol_lookback: [14, 20]
+- regime_vol_high_threshold: [0.025, 0.030, 0.035]
+
+Risk multipliers (used in HARD_SKIP and SOFT_GATE):
+- regime_high_vol_risk_multiplier: [0.60, 0.70, 0.80]
+
+If SOFT_GATE is supported with separate multipliers:
+- regime_downtrend_forming_mult: [0.80, 0.85, 1.00]
+- regime_highvol_forming_mult:  [0.70, 0.85, 1.00]
+- regime_highvol_confirmed_mult:[0.80, 0.90, 1.00]
+
+If SOFT_GATE not yet split by kind:
+- reuse the existing high_vol_risk_multiplier only
+
+Keep the ranges tight. Enforce grid-size-limit + random sampling (already built).
+
+3) Make Regime OFF Compete Fairly
+---------------------------------
+Ensure:
+- When regime_mode == "OFF", do not compute regime series
+- do not download QQQ unless needed
+- score it the same way as others
+
+This will tell you honestly if regime filters add value OOS.
+
+4) Add Regime Attribution Columns to walkforward_results.csv
+------------------------------------------------------------
+For each test window record:
+
+- test_regime_mode
+- test_downtrend_days
+- test_highvol_days
+- test_forming_skipped_downtrend
+- test_forming_skipped_highvol
+- test_confirmed_skipped_downtrend (if applicable)
+- test_confirmed_skipped_highvol (if applicable)
+- test_avg_effective_risk_forming
+- test_avg_effective_risk_confirmed
+
+If your backtester already prints counters but doesn’t return them,
+update run_backtest() to return a dict "diagnostics" alongside trades/equity:
+    (trades_df, equity_df, diagnostics)
+
+Diagnostics should include the skip counters and any avg effective risk trackers.
+Optimize.py should write diagnostics into the results CSV.
+
+5) Composite Scoring Stays the Same (v1)
+----------------------------------------
+Keep your current composite score:
+- hard fails: trade_count < min_trades_test, max DD > limit, exposure days < limit
+- score = return adjusted - dd penalty - exposure penalty
+
+If results are too sparse, relax min_trades_test from 20 to 15 for smaller universes,
+but keep 20+ for 200+ symbols.
+
+6) Output: Best Regime Defaults + Stability
+-------------------------------------------
+In walkforward_best_params.json include regime fields, including regime_mode.
+
+In walkforward_summary.txt include:
+- win counts for regime_mode (OFF vs HARD_SKIP vs SOFT_GATE)
+- mean/median test return + DD by regime_mode
+- % windows passing by regime_mode
+
+This will clearly show if regime adds OOS value.
+
+Acceptance Criteria
+-------------------
+A) optimize.py runs with regime included in grid without exploding runtime
+B) "OFF" is a candidate and sometimes wins (if it truly is best)
+C) walkforward_results.csv includes regime attribution columns
+D) walkforward_summary.txt shows regime_mode win counts and performance by mode
+E) No-lookahead maintained (regime signals already shifted)
+
+Manual Test Plan
+----------------
+Small test:
+python optimize.py --universe nasdaq --max-stocks 50 \
+  --train-bars 252 --test-bars 63 --step-bars 63 \
+  --objective composite --grid-size-limit 120 \
+  --min-trades-test 10 --min-exposure-days-test 10
+
+Medium:
+python optimize.py --universe nasdaq --max-stocks 200 \
+  --train-bars 504 --test-bars 126 --step-bars 126 \
+  --objective composite --grid-size-limit 250 \
+  --min-trades-test 20 --min-exposure-days-test 20
+
+Non-Goals
+---------
+- Regime-only strategy
+- Intraday regime switching
+- Adding more benchmarks/breadth indicators
+Those can be Task 13+ if needed.
