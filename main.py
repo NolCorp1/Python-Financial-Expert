@@ -479,17 +479,15 @@ def main():
                        help='ATR lookback for volatility detection')
     parser.add_argument('--regime-vol-high-threshold', type=float, default=0.03,
                        help='ATR%% threshold for high volatility (0.03 = 3%%)')
-    parser.add_argument('--regime-disable-forming-in-downtrend', type=str, default='true',
+    parser.add_argument('--regime-soft-gate', type=str, default='true',
                        choices=['true', 'false'],
-                       help='Disable FORMING signals in downtrend')
-    parser.add_argument('--regime-disable-forming-in-high-vol', type=str, default='true',
-                       choices=['true', 'false'],
-                       help='Disable FORMING signals in high volatility')
-    parser.add_argument('--regime-reduce-risk-in-high-vol', type=str, default='true',
-                       choices=['true', 'false'],
-                       help='Reduce risk in high volatility')
-    parser.add_argument('--regime-high-vol-risk-multiplier', type=float, default=0.70,
-                       help='Risk multiplier in high volatility (0.7 = 70%%)')
+                       help='Use soft gating (reduce risk) instead of hard skip')
+    parser.add_argument('--regime-downtrend-forming-mult', type=float, default=0.85,
+                       help='Risk multiplier for FORMING in downtrend (0.85 = 85%%)')
+    parser.add_argument('--regime-highvol-forming-mult', type=float, default=0.70,
+                       help='Risk multiplier for FORMING in high vol (0.70 = 70%%)')
+    parser.add_argument('--regime-highvol-confirmed-mult', type=float, default=0.85,
+                       help='Risk multiplier for CONFIRMED in high vol (0.85 = 85%%)')
     
     args = parser.parse_args()
     
@@ -653,10 +651,10 @@ def main():
             regime_trend_slow_ma=args.regime_slow_ma,
             regime_vol_lookback=args.regime_vol_lookback,
             regime_vol_high_threshold=args.regime_vol_high_threshold,
-            regime_disable_forming_in_downtrend=args.regime_disable_forming_in_downtrend.lower() == 'true',
-            regime_disable_forming_in_high_vol=args.regime_disable_forming_in_high_vol.lower() == 'true',
-            regime_reduce_risk_in_high_vol=args.regime_reduce_risk_in_high_vol.lower() == 'true',
-            regime_high_vol_risk_multiplier=args.regime_high_vol_risk_multiplier
+            regime_soft_gate=args.regime_soft_gate.lower() == 'true',
+            regime_downtrend_forming_risk_mult=args.regime_downtrend_forming_mult,
+            regime_highvol_forming_risk_mult=args.regime_highvol_forming_mult,
+            regime_highvol_confirmed_risk_mult=args.regime_highvol_confirmed_mult
         )
         
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)

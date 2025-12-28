@@ -91,10 +91,10 @@ class BacktestConfig:
     regime_trend_slow_ma: int = 200
     regime_vol_lookback: int = 20
     regime_vol_high_threshold: float = 0.03
-    regime_disable_forming_in_downtrend: bool = True
-    regime_disable_forming_in_high_vol: bool = True
-    regime_reduce_risk_in_high_vol: bool = True
-    regime_high_vol_risk_multiplier: float = 0.70
+    regime_soft_gate: bool = True
+    regime_downtrend_forming_risk_mult: float = 0.85
+    regime_highvol_forming_risk_mult: float = 0.70
+    regime_highvol_confirmed_risk_mult: float = 0.85
 
 
 @dataclass
@@ -313,8 +313,10 @@ def run_backtest(
     skipped_invalid_sizing = 0
     skipped_corr_cap = 0
     skipped_cluster_cap = 0
-    skipped_regime_forming_downtrend = 0
-    skipped_regime_forming_highvol = 0
+    reduced_regime_forming_downtrend = 0
+    reduced_regime_forming_highvol = 0
+    reduced_regime_confirmed_highvol = 0
+    skipped_regime_hard = 0
     
     corr_matrix = pd.DataFrame()
     clusters: Dict[str, int] = {}
@@ -603,21 +605,34 @@ def run_backtest(
             
             current_trend = None
             current_vol = None
+            regime_risk_mult = 1.0
             if cfg.use_regime_filter and len(regime_df) > 0:
                 if current_date in regime_df.index:
                     current_trend = regime_df.loc[current_date, 'trend_signal']
                     current_vol = regime_df.loc[current_date, 'vol_signal']
                 
-                if signal.entry_kind == "FORMING":
-                    if cfg.regime_disable_forming_in_downtrend and current_trend == "DOWN":
-                        skipped_regime_forming_downtrend += 1
-                        signal_idx += 1
-                        continue
-                    
-                    if cfg.regime_disable_forming_in_high_vol and current_vol == "HIGH":
-                        skipped_regime_forming_highvol += 1
-                        signal_idx += 1
-                        continue
+                if cfg.regime_soft_gate:
+                    if signal.entry_kind == "FORMING":
+                        if current_trend == "DOWN":
+                            regime_risk_mult *= cfg.regime_downtrend_forming_risk_mult
+                            reduced_regime_forming_downtrend += 1
+                        if current_vol == "HIGH":
+                            regime_risk_mult *= cfg.regime_highvol_forming_risk_mult
+                            reduced_regime_forming_highvol += 1
+                    else:
+                        if current_vol == "HIGH":
+                            regime_risk_mult *= cfg.regime_highvol_confirmed_risk_mult
+                            reduced_regime_confirmed_highvol += 1
+                else:
+                    if signal.entry_kind == "FORMING":
+                        if current_trend == "DOWN":
+                            skipped_regime_hard += 1
+                            signal_idx += 1
+                            continue
+                        if current_vol == "HIGH":
+                            skipped_regime_hard += 1
+                            signal_idx += 1
+                            continue
             
             if not cfg.allow_same_day_reentry:
                 if current_date in exited_today and sym in exited_today[current_date]:
@@ -642,8 +657,7 @@ def run_backtest(
             else:
                 risk_fraction = cfg.risk_fraction_forming
             
-            if cfg.use_regime_filter and cfg.regime_reduce_risk_in_high_vol and current_vol == "HIGH":
-                risk_fraction *= cfg.regime_high_vol_risk_multiplier
+            risk_fraction *= regime_risk_mult
             
             risk_budget = risk_fraction * current_equity
             shares = int(math.floor(risk_budget / stop_dist))
@@ -719,8 +733,10 @@ def run_backtest(
         'skipped_invalid_sizing': skipped_invalid_sizing,
         'skipped_corr_cap': skipped_corr_cap,
         'skipped_cluster_cap': skipped_cluster_cap,
-        'skipped_regime_forming_downtrend': skipped_regime_forming_downtrend,
-        'skipped_regime_forming_highvol': skipped_regime_forming_highvol
+        'reduced_regime_forming_downtrend': reduced_regime_forming_downtrend,
+        'reduced_regime_forming_highvol': reduced_regime_forming_highvol,
+        'reduced_regime_confirmed_highvol': reduced_regime_confirmed_highvol,
+        'skipped_regime_hard': skipped_regime_hard
     }
     
     if any(skip_counts.values()):
@@ -735,14 +751,21 @@ def run_backtest(
             print(f"    - Correlation cap: {skipped_corr_cap}")
         if skipped_cluster_cap > 0:
             print(f"    - Cluster cap: {skipped_cluster_cap}")
-        if skipped_regime_forming_downtrend > 0:
-            print(f"    - Regime downtrend (FORMING): {skipped_regime_forming_downtrend}")
-        if skipped_regime_forming_highvol > 0:
-            print(f"    - Regime high vol (FORMING): {skipped_regime_forming_highvol}")
+        if skipped_regime_hard > 0:
+            print(f"    - Regime hard skip (FORMING): {skipped_regime_hard}")
         if skipped_symbol_already_open > 0:
             print(f"    - Symbol already open: {skipped_symbol_already_open}")
         if skipped_invalid_sizing > 0:
             print(f"    - Invalid sizing: {skipped_invalid_sizing}")
+    
+    if reduced_regime_forming_downtrend > 0 or reduced_regime_forming_highvol > 0 or reduced_regime_confirmed_highvol > 0:
+        print("\n  REGIME RISK REDUCTIONS:")
+        if reduced_regime_forming_downtrend > 0:
+            print(f"    - FORMING in downtrend (x{cfg.regime_downtrend_forming_risk_mult:.2f}): {reduced_regime_forming_downtrend}")
+        if reduced_regime_forming_highvol > 0:
+            print(f"    - FORMING in high vol (x{cfg.regime_highvol_forming_risk_mult:.2f}): {reduced_regime_forming_highvol}")
+        if reduced_regime_confirmed_highvol > 0:
+            print(f"    - CONFIRMED in high vol (x{cfg.regime_highvol_confirmed_risk_mult:.2f}): {reduced_regime_confirmed_highvol}")
     
     trades_df = pd.DataFrame(completed_trades)
     if not trades_df.empty:
