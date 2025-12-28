@@ -1,0 +1,169 @@
+Task 10 — Correlation & Cluster Caps (Portfolio Drawdown Control)
+==============================================================================
+Objective
+---------
+Reduce portfolio drawdowns and improve robustness by preventing the backtester
+(and later live trader) from over-allocating into highly correlated positions.
+
+Implement:
+1) Symbol-to-symbol correlation estimation using recent returns
+2) A cluster assignment method to bucket similar movers
+3) Portfolio constraints:
+   - max positions per cluster
+   - max correlation to existing open positions for new entries
+4) Diagnostics to prove constraints are binding and beneficial
+
+This task does NOT change pattern detection.
+It changes entry acceptance rules only (portfolio construction).
+
+Files to Edit
+-------------
+- backtester.py
+- main.py (CLI flags)
+- (optional) metrics.py (cluster exposure reporting)
+- (optional) optimize.py (include correlation caps in grid later)
+
+Key Design Choices (v1)
+-----------------------
+- Use daily close-to-close returns
+- Use trailing lookback (e.g., 60 bars) ending at prior day (no-lookahead)
+- Correlation computed only among symbols with enough overlap data
+- Cluster method: simple and stable
+  - Option A (v1 recommended): hierarchical clustering on correlation distance
+  - Option B: k-means on PCA factors (more complex)
+- v1 Implementation can be simple:
+  - Use correlation threshold + sector proxy fallback if cluster calc fails
+
+No-Lookahead Rule
+-----------------
+For day t decisions:
+- correlation estimates must be computed from data up to day t-1 only
+- cluster assignments can be static per run, computed using the initial train slice
+  OR rolling, but must lag by 1 day if rolling
+
+Recommended v1:
+- Compute correlation matrix once per backtest run using a fixed lookback window
+  ending at each day t-1 (rolling correlation per day is heavier).
+- For speed, compute a correlation snapshot from the most recent N days prior to the
+  backtest start, and keep it constant through the run (acceptable v1).
+  (Then upgrade to rolling later.)
+
+1) Add BacktestConfig Fields
+----------------------------
+In backtester.py add:
+
+- use_correlation_caps: bool = True
+- corr_lookback_days: int = 60
+- max_corr_to_existing: float = 0.80
+- use_cluster_caps: bool = True
+- n_clusters: int = 8
+- max_positions_per_cluster: int = 2
+
+Diagnostics:
+- skipped_corr_cap: int counter
+- skipped_cluster_cap: int counter
+
+2) Build Returns Matrix
+-----------------------
+Create helper:
+
+    def compute_returns_matrix(price_data_by_symbol: dict[str, pd.DataFrame]) -> pd.DataFrame
+
+- Align close prices on date index
+- returns = Close.pct_change()
+- Drop rows with all NaNs
+
+3) Compute Correlation + Clusters
+---------------------------------
+Add helper:
+
+    def compute_symbol_correlation_and_clusters(
+        returns_df: pd.DataFrame,
+        lookback_days: int,
+        n_clusters: int
+    ) -> tuple[pd.DataFrame, dict[str, int]]
+
+Implementation v1:
+- Use the last `lookback_days` rows of returns_df
+- corr = returns.tail(lookback_days).corr(min_periods=int(lookback_days*0.7))
+- Convert corr to distance: dist = 1 - corr
+- Perform hierarchical clustering (scipy) into n_clusters
+- Return:
+  - corr matrix
+  - clusters dict symbol -> cluster_id (0..n_clusters-1)
+
+If scipy clustering feels heavy, v1 fallback:
+- If clustering fails, assign all symbols cluster 0 (no cluster cap), but keep corr cap.
+
+4) Enforce Correlation Cap at Entry Time
+----------------------------------------
+When evaluating a new entry signal for symbol S:
+
+If cfg.use_correlation_caps and there are open positions:
+- For each open symbol O:
+    corr_so = corr.loc[S, O] if available else 0
+- If max(corr_so) >= cfg.max_corr_to_existing:
+    skip entry
+    skipped_corr_cap++
+
+5) Enforce Cluster Cap at Entry Time
+------------------------------------
+If cfg.use_cluster_caps:
+- cluster_s = clusters.get(S)
+- Count open positions whose cluster == cluster_s
+- If count >= cfg.max_positions_per_cluster:
+    skip entry
+    skipped_cluster_cap++
+
+6) CLI Flags in main.py
+-----------------------
+Add:
+- --use-correlation-caps true/false
+- --corr-lookback-days 60
+- --max-corr-to-existing 0.8
+- --use-cluster-caps true/false
+- --n-clusters 8
+- --max-positions-per-cluster 2
+
+Print skip counters at end:
+- skipped_corr_cap
+- skipped_cluster_cap
+
+7) Reporting (Optional but Helpful)
+-----------------------------------
+Write:
+- outputs/cluster_assignments.csv: symbol, cluster_id
+- outputs/portfolio_cluster_exposure.csv: date, open_positions_total, open_positions_by_cluster
+
+This makes it obvious if you were concentrated.
+
+Acceptance Criteria
+-------------------
+A) Backtest runs with correlation caps enabled by default
+B) Entries are skipped when correlation/cluster caps bind
+C) Skip counters are printed and non-zero on larger universes
+D) Max drawdown decreases materially on broad universe tests
+E) No-lookahead respected:
+   - correlation/cluster computed without using future returns
+
+Manual Test Plan
+----------------
+1) Baseline (Task 7/8/9 tuned best params):
+   python main.py --universe nasdaq --max-stocks 200 --backtest-v2
+
+2) Enable corr/cluster caps:
+   python main.py --universe nasdaq --max-stocks 200 --backtest-v2 \
+     --use-correlation-caps true --max-corr-to-existing 0.8 \
+     --use-cluster-caps true --n-clusters 8 --max-positions-per-cluster 2
+
+3) Compare:
+- total return
+- max DD
+- exposure days
+- skipped_corr_cap and skipped_cluster_cap
+
+Non-Goals
+---------
+- Rolling daily correlation recompute (optimize later)
+- Sector-based caps (Task 11 if desired)
+- Live broker execution

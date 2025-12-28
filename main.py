@@ -451,6 +451,21 @@ def main():
     parser.add_argument('--forming-tighten-stop-to-r', type=float, default=-0.25,
                        help='R-multiple to tighten FORMING stop to when no-progress-action is TIGHTEN_STOP')
     
+    parser.add_argument('--use-correlation-caps', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Enable correlation caps for entries')
+    parser.add_argument('--corr-lookback-days', type=int, default=60,
+                       help='Lookback window for correlation computation')
+    parser.add_argument('--max-corr-to-existing', type=float, default=0.80,
+                       help='Max correlation to existing positions (skip if exceeded)')
+    parser.add_argument('--use-cluster-caps', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Enable cluster-based position caps')
+    parser.add_argument('--n-clusters', type=int, default=8,
+                       help='Number of clusters for grouping symbols')
+    parser.add_argument('--max-positions-per-cluster', type=int, default=2,
+                       help='Max positions allowed per cluster')
+    
     args = parser.parse_args()
     
     config = DEFAULT_CONFIG.copy()
@@ -590,7 +605,13 @@ def main():
             confirmed_trailing_enabled=args.confirmed_trailing_enabled.lower() == 'true',
             confirmed_trailing_start_r=args.confirmed_trailing_start_r,
             confirmed_trailing_atr_mult=args.confirmed_trailing_atr_mult,
-            atr_length=args.atr_length
+            atr_length=args.atr_length,
+            use_correlation_caps=args.use_correlation_caps.lower() == 'true',
+            corr_lookback_days=args.corr_lookback_days,
+            max_corr_to_existing=args.max_corr_to_existing,
+            use_cluster_caps=args.use_cluster_caps.lower() == 'true',
+            n_clusters=args.n_clusters,
+            max_positions_per_cluster=args.max_positions_per_cluster
         )
         
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)

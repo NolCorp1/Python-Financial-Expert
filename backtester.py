@@ -77,6 +77,13 @@ class BacktestConfig:
     confirmed_trailing_start_r: float = 1.00
     confirmed_trailing_atr_mult: float = 2.0
     atr_length: int = 14
+    
+    use_correlation_caps: bool = True
+    corr_lookback_days: int = 60
+    max_corr_to_existing: float = 0.80
+    use_cluster_caps: bool = True
+    n_clusters: int = 8
+    max_positions_per_cluster: int = 2
 
 
 @dataclass
@@ -144,6 +151,93 @@ def compute_atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
     return atr
 
 
+def compute_returns_matrix(price_data_by_symbol: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """
+    Build a returns matrix from price data.
+    
+    Args:
+        price_data_by_symbol: Dict mapping symbol to OHLCV DataFrame
+        
+    Returns:
+        DataFrame with dates as index, symbols as columns, daily returns as values
+    """
+    close_prices = {}
+    for sym, df in price_data_by_symbol.items():
+        if 'Close' in df.columns and len(df) > 0:
+            close_prices[sym] = df['Close']
+    
+    if not close_prices:
+        return pd.DataFrame()
+    
+    prices_df = pd.DataFrame(close_prices)
+    returns_df = prices_df.pct_change().dropna(how='all')
+    
+    return returns_df
+
+
+def compute_symbol_correlation_and_clusters(
+    returns_df: pd.DataFrame,
+    lookback_days: int,
+    n_clusters: int
+) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """
+    Compute correlation matrix and assign symbols to clusters.
+    
+    Uses hierarchical clustering on correlation distance.
+    Falls back to single cluster if clustering fails.
+    
+    Args:
+        returns_df: Returns matrix (dates x symbols)
+        lookback_days: Number of trailing days to use
+        n_clusters: Target number of clusters
+        
+    Returns:
+        corr_matrix: Symbol-to-symbol correlation DataFrame
+        clusters: Dict mapping symbol -> cluster_id (0 to n_clusters-1)
+    """
+    from scipy.cluster.hierarchy import linkage, fcluster
+    from scipy.spatial.distance import squareform
+    
+    symbols = list(returns_df.columns)
+    clusters = {s: 0 for s in symbols}
+    
+    tail_returns = returns_df.tail(lookback_days)
+    min_periods = int(lookback_days * 0.7)
+    corr_matrix = tail_returns.corr(min_periods=min_periods)
+    
+    corr_matrix = corr_matrix.fillna(0)
+    
+    valid_symbols = [s for s in symbols if s in corr_matrix.columns]
+    if len(valid_symbols) < 2:
+        return corr_matrix, clusters
+    
+    try:
+        corr_sub = corr_matrix.loc[valid_symbols, valid_symbols]
+        
+        dist_matrix = 1 - corr_sub.values
+        np.fill_diagonal(dist_matrix, 0)
+        dist_matrix = np.clip(dist_matrix, 0, 2)
+        dist_matrix = (dist_matrix + dist_matrix.T) / 2
+        
+        condensed_dist = squareform(dist_matrix, checks=False)
+        
+        if len(condensed_dist) == 0:
+            return corr_matrix, clusters
+            
+        linkage_matrix = linkage(condensed_dist, method='average')
+        
+        actual_n_clusters = min(n_clusters, len(valid_symbols))
+        cluster_labels = fcluster(linkage_matrix, t=actual_n_clusters, criterion='maxclust')
+        
+        for i, sym in enumerate(valid_symbols):
+            clusters[sym] = int(cluster_labels[i] - 1)
+            
+    except Exception as e:
+        pass
+    
+    return corr_matrix, clusters
+
+
 def run_backtest(
     signals_by_symbol: Dict[str, List[TradeSignal]],
     price_data_by_symbol: Dict[str, pd.DataFrame],
@@ -173,16 +267,34 @@ def run_backtest(
     skipped_max_confirmed = 0
     skipped_symbol_already_open = 0
     skipped_invalid_sizing = 0
+    skipped_corr_cap = 0
+    skipped_cluster_cap = 0
     
-    atr_by_symbol: Dict[str, pd.Series] = {}
-    for sym, df in price_data_by_symbol.items():
-        atr_by_symbol[sym] = compute_atr(df, cfg.atr_length)
+    corr_matrix = pd.DataFrame()
+    clusters: Dict[str, int] = {}
     
     all_signals = []
     for sym, sigs in signals_by_symbol.items():
         for sig in sigs:
             all_signals.append(sig)
     all_signals.sort(key=lambda s: s.entry_date)
+    
+    if cfg.use_correlation_caps or cfg.use_cluster_caps:
+        if all_signals:
+            first_signal_date = all_signals[0].entry_date
+            returns_df = compute_returns_matrix(price_data_by_symbol)
+            if len(returns_df) > 0:
+                returns_before_signal = returns_df[returns_df.index < first_signal_date]
+                if len(returns_before_signal) >= cfg.corr_lookback_days * 0.5:
+                    corr_matrix, clusters = compute_symbol_correlation_and_clusters(
+                        returns_before_signal,
+                        cfg.corr_lookback_days,
+                        cfg.n_clusters
+                    )
+    
+    atr_by_symbol: Dict[str, pd.Series] = {}
+    for sym, df in price_data_by_symbol.items():
+        atr_by_symbol[sym] = compute_atr(df, cfg.atr_length)
     
     all_dates = set()
     for df in price_data_by_symbol.values():
@@ -411,6 +523,32 @@ def run_backtest(
                 signal_idx += 1
                 continue
             
+            if cfg.use_correlation_caps and len(open_positions) > 0 and sym in corr_matrix.columns:
+                max_corr_found = 0.0
+                for open_sym in open_positions.keys():
+                    if open_sym in corr_matrix.columns:
+                        try:
+                            corr_val = corr_matrix.loc[sym, open_sym]
+                            if not pd.isna(corr_val):
+                                max_corr_found = max(max_corr_found, abs(corr_val))
+                        except (KeyError, TypeError):
+                            pass
+                if max_corr_found >= cfg.max_corr_to_existing:
+                    skipped_corr_cap += 1
+                    signal_idx += 1
+                    continue
+            
+            if cfg.use_cluster_caps and sym in clusters:
+                sym_cluster = clusters[sym]
+                cluster_count = sum(
+                    1 for p in open_positions.values() 
+                    if clusters.get(p.symbol, -1) == sym_cluster
+                )
+                if cluster_count >= cfg.max_positions_per_cluster:
+                    skipped_cluster_cap += 1
+                    signal_idx += 1
+                    continue
+            
             if not cfg.allow_same_day_reentry:
                 if current_date in exited_today and sym in exited_today[current_date]:
                     signal_idx += 1
@@ -505,7 +643,9 @@ def run_backtest(
         'skipped_max_forming': skipped_max_forming,
         'skipped_max_confirmed': skipped_max_confirmed,
         'skipped_symbol_already_open': skipped_symbol_already_open,
-        'skipped_invalid_sizing': skipped_invalid_sizing
+        'skipped_invalid_sizing': skipped_invalid_sizing,
+        'skipped_corr_cap': skipped_corr_cap,
+        'skipped_cluster_cap': skipped_cluster_cap
     }
     
     if any(skip_counts.values()):
@@ -516,6 +656,10 @@ def run_backtest(
             print(f"    - Max FORMING positions: {skipped_max_forming}")
         if skipped_max_confirmed > 0:
             print(f"    - Max CONFIRMED positions: {skipped_max_confirmed}")
+        if skipped_corr_cap > 0:
+            print(f"    - Correlation cap: {skipped_corr_cap}")
+        if skipped_cluster_cap > 0:
+            print(f"    - Cluster cap: {skipped_cluster_cap}")
         if skipped_symbol_already_open > 0:
             print(f"    - Symbol already open: {skipped_symbol_already_open}")
         if skipped_invalid_sizing > 0:
