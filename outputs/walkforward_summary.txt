@@ -1,1 +1,87 @@
-No data available
+WALK-FORWARD OPTIMIZATION SUMMARY
+========================================
+Windows: 5
+Valid test windows (any trades): 3
+Quality test windows (min trades met): 3
+Mean test score: -0.80
+Median test score: -0.54
+
+OVERALL BEST PARAMETERS (by mean OOS score):
+{
+  "breakout_buffer": 0.002,
+  "confirmed_move_stop_to_be_at_r": 0.5,
+  "confirmed_partial_tp_at_r": 1.0,
+  "confirmed_partial_tp_enabled": true,
+  "confirmed_partial_tp_fraction": 0.33,
+  "confirmed_trailing_atr_mult": 1.5,
+  "confirmed_trailing_enabled": true,
+  "confirmed_trailing_start_r": 0.5,
+  "forming_max_hold_days": 45,
+  "forming_no_progress_action": "EXIT",
+  "forming_no_progress_days": 20,
+  "forming_no_progress_r": 0.25,
+  "low_tolerance": 0.05,
+  "max_positions_forming": 3,
+  "max_sep": 260,
+  "min_sep": 20,
+  "neckline_min_rise": 0.08,
+  "regime_downtrend_forming_mult": 0.8,
+  "regime_highvol_confirmed_mult": 1.0,
+  "regime_highvol_forming_mult": 1.0,
+  "regime_mode": "SOFT_GATE",
+  "regime_trend_fast_ma": 20,
+  "regime_trend_slow_ma": 150,
+  "regime_vol_high_threshold": 0.03,
+  "regime_vol_lookback": 20,
+  "risk_fraction_forming": 0.008,
+  "stop_loss_buffer": 0.02
+}
+Mean OOS score: 1.23
+
+REGIME FILTER STATISTICS
+------------------------------
+  SOFT_GATE: 5 windows, mean score=-0.80
+  Hard skipped (HARD_SKIP mode): 0
+  Soft gated (reduced risk): 13
+  Downtrend days (total): 308
+  High-vol days (total): 18
+  Avg effective risk: FORMING=0.007, CONFIRMED=0.010
+
+WALK-FORWARD STABILITY SUMMARY v2
+==================================================
+
+--- Parameter Win Counts ---
+  risk_fraction_forming: 0.008(3), 0.006(2)
+  max_positions_forming: 4(3), 3(2)
+  forming_no_progress_days: 25(3), 20(2)
+  forming_no_progress_r: 0.75(2), 0.25(2), 0.5(1)
+  forming_max_hold_days: 75(2), 45(2), 60(1)
+  confirmed_partial_tp_at_r: 1.0(3), 0.75(1), 0.5(1)
+  confirmed_partial_tp_enabled: True(3), False(2)
+  confirmed_move_stop_to_be_at_r: 0.5(3), 0.75(2)
+  confirmed_trailing_enabled: False(3), True(2)
+  confirmed_trailing_atr_mult: 2.5(2), 1.5(2), 2.0(1)
+  low_tolerance: 0.05(3), 0.04(2)
+  neckline_min_rise: 0.08(3), 0.1(2)
+  min_sep: 30(3), 20(2)
+  breakout_buffer: 0.002(5)
+  confirmed_partial_tp_fraction: 0.33(4), 0.5(1)
+  confirmed_trailing_start_r: 0.5(2), 1.0(2), 0.75(1)
+  forming_no_progress_action: EXIT(5)
+  max_sep: 260(5)
+  regime_downtrend_forming_mult: 0.85(3), 0.8(1), 1.0(1)
+  regime_highvol_confirmed_mult: 0.8(2), 0.9(2), 1.0(1)
+  regime_highvol_forming_mult: 0.85(3), 1.0(2)
+  regime_mode: SOFT_GATE(5)
+  regime_trend_fast_ma: 20(4), 50(1)
+  regime_trend_slow_ma: 150(4), 200(1)
+  regime_vol_high_threshold: 0.025(2), 0.03(2), 0.035(1)
+  regime_vol_lookback: 20(5)
+  stop_loss_buffer: 0.02(5)
+
+--- Aggregate Statistics ---
+  Mean test return: -0.59%
+  Median test return: 0.48%
+  Mean test max DD: -2.55%
+  Median test max DD: -2.05%
+  Windows passing constraints: 3/5 (60%)

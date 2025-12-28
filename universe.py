@@ -84,9 +84,12 @@ def get_nasdaq_symbols_cached(
     
     symbols = _download_nasdaq_symbols(exclude_funds=exclude_funds)
     
-    if symbols:
+    if symbols and len(symbols) > 50:
         pd.DataFrame({'symbol': symbols}).to_csv(cache_file, index=False)
         print(f"Cached {len(symbols)} NASDAQ symbols to {cache_path}")
+    elif len(symbols) <= 50:
+        print(f"Download returned only {len(symbols)} symbols - using fallback instead")
+        symbols = _get_fallback_symbols()
     
     if limit:
         symbols = symbols[:limit]
