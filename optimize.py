@@ -788,46 +788,275 @@ def format_stability_summary(stability: Dict[str, Dict[str, int]]) -> str:
     return "\n".join(lines)
 
 
-def find_overall_best_params(window_results: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], float]:
+def find_overall_best_params(
+    window_results: List[Dict[str, Any]],
+    min_pass_rate: float = 0.60,
+    min_median_test_score: float = 0.0
+) -> Tuple[Dict[str, Any], float, Dict[str, Any]]:
     """
-    Find the parameter set with best mean test score.
+    Find the parameter set with best mean test score, applying robustness gating.
+    
+    Robustness criteria:
+    1. Minimum pass rate (windows with valid scores / total windows)
+    2. Minimum median test score > threshold
+    3. Prefer lower variance (stability) as tie-breaker
     
     Args:
         window_results: List of window results
+        min_pass_rate: Minimum fraction of windows that must pass (0.6 = 60%)
+        min_median_test_score: Minimum median test score required
         
     Returns:
-        Tuple of (best_params, mean_score)
+        Tuple of (best_params, mean_score, robustness_stats)
     """
-    param_scores = defaultdict(list)
+    param_stats = defaultdict(lambda: {
+        'scores': [],
+        'returns': [],
+        'dds': [],
+        'trades': [],
+        'exposure_days': []
+    })
+    
+    total_windows = len(window_results)
     
     for result in window_results:
         params = result.get('best_params')
         test_score = result.get('test_score', float('-inf'))
         
-        if params is None or test_score == float('-inf'):
+        if params is None:
             continue
         
         params_key = json.dumps(params, sort_keys=True)
-        param_scores[params_key].append(test_score)
+        
+        if test_score != float('-inf'):
+            param_stats[params_key]['scores'].append(test_score)
+            param_stats[params_key]['returns'].append(result.get('test_total_return_pct', 0))
+            param_stats[params_key]['dds'].append(result.get('test_max_dd_pct', 0))
+            param_stats[params_key]['trades'].append(result.get('test_trade_count', 0))
+            param_stats[params_key]['exposure_days'].append(result.get('test_exposure_days', 0))
     
-    if not param_scores:
-        return {}, float('-inf')
+    if not param_stats:
+        return {}, float('-inf'), {'candidates': 0, 'passed_gating': 0}
     
-    best_key = None
-    best_mean = float('-inf')
+    candidates = []
+    for params_key, stats in param_stats.items():
+        scores = stats['scores']
+        if not scores:
+            continue
+        
+        pass_rate = len(scores) / total_windows if total_windows > 0 else 0
+        mean_score = np.mean(scores)
+        median_score = np.median(scores)
+        score_variance = np.var(scores) if len(scores) > 1 else 0
+        mean_dd = np.mean(stats['dds']) if stats['dds'] else 0
+        dd_variance = np.var(stats['dds']) if len(stats['dds']) > 1 else 0
+        mean_trades = np.mean(stats['trades']) if stats['trades'] else 0
+        mean_exposure = np.mean(stats['exposure_days']) if stats['exposure_days'] else 0
+        
+        candidates.append({
+            'params_key': params_key,
+            'pass_rate': pass_rate,
+            'mean_score': mean_score,
+            'median_score': median_score,
+            'score_variance': score_variance,
+            'mean_dd': mean_dd,
+            'dd_variance': dd_variance,
+            'mean_trades': mean_trades,
+            'mean_exposure': mean_exposure,
+            'window_count': len(scores)
+        })
     
-    for key, scores in param_scores.items():
-        valid_scores = [s for s in scores if s != float('-inf')]
-        if valid_scores:
-            mean_score = np.mean(valid_scores)
-            if mean_score > best_mean:
-                best_mean = mean_score
-                best_key = key
+    robustness_stats = {
+        'total_candidates': len(candidates),
+        'total_windows': total_windows,
+        'min_pass_rate_required': min_pass_rate,
+        'min_median_score_required': min_median_test_score,
+    }
     
-    if best_key is None:
-        return {}, float('-inf')
+    passing_candidates = [
+        c for c in candidates 
+        if c['pass_rate'] >= min_pass_rate and c['median_score'] >= min_median_test_score
+    ]
     
-    return json.loads(best_key), best_mean
+    robustness_stats['candidates_passing_gating'] = len(passing_candidates)
+    
+    if not passing_candidates:
+        if candidates:
+            candidates.sort(key=lambda x: (-x['median_score'], x['dd_variance']))
+            best = candidates[0]
+            robustness_stats['relaxed_gating'] = True
+            robustness_stats['warning'] = 'No candidates met robustness criteria, using best available'
+        else:
+            return {}, float('-inf'), robustness_stats
+    else:
+        passing_candidates.sort(key=lambda x: (-x['median_score'], x['dd_variance']))
+        best = passing_candidates[0]
+        robustness_stats['relaxed_gating'] = False
+    
+    robustness_stats['selected'] = {
+        'pass_rate': best['pass_rate'],
+        'mean_score': best['mean_score'],
+        'median_score': best['median_score'],
+        'score_variance': best['score_variance'],
+        'mean_dd': best['mean_dd'],
+        'dd_variance': best['dd_variance'],
+        'mean_trades': best['mean_trades'],
+        'mean_exposure': best['mean_exposure'],
+        'windows_passing': best['window_count']
+    }
+    
+    return json.loads(best['params_key']), best['mean_score'], robustness_stats
+
+
+def build_strategy_config(
+    best_params: Dict[str, Any],
+    args,
+    robustness_stats: Dict[str, Any],
+    window_results: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    Build a comprehensive strategy configuration for production use.
+    
+    Args:
+        best_params: Best parameters from optimization
+        args: CLI arguments namespace
+        robustness_stats: Robustness gating statistics
+        window_results: List of window results for metadata
+        
+    Returns:
+        Complete strategy configuration dict
+    """
+    config = {
+        'meta': {
+            'generated_at': datetime.now().isoformat(),
+            'generator': 'optimize.py walk-forward v2',
+            'version': '1.0.0',
+        },
+        
+        'optimization': {
+            'universe_used': args.universe,
+            'max_stocks_used': args.max_stocks,
+            'train_bars': args.train_bars,
+            'test_bars': args.test_bars,
+            'step_bars': args.step_bars,
+            'objective': args.objective,
+            'grid_size_limit': args.grid_size_limit,
+            'min_trades_test': args.min_trades_test,
+            'min_exposure_days_test': args.min_exposure_days_test,
+            'max_dd_train': args.max_dd_train,
+            'max_dd_test': args.max_dd_test,
+            'min_pass_rate': getattr(args, 'min_pass_rate', 0.60),
+            'min_median_test_score': getattr(args, 'min_median_test_score', 0.0),
+            'windows_completed': len(window_results),
+        },
+        
+        'robustness': robustness_stats,
+        
+        'detection': {
+            'price_tolerance': best_params.get('low_tolerance', 0.04),
+            'min_peak_height': best_params.get('neckline_min_rise', 0.06),
+            'min_separation': best_params.get('min_sep', 20),
+            'max_separation': best_params.get('max_sep', 200),
+            'stop_loss_buffer': best_params.get('stop_loss_buffer', 0.02),
+            'breakout_buffer': best_params.get('breakout_buffer', 0.002),
+            'lookback_days': 504,
+        },
+        
+        'portfolio': {
+            'initial_capital': args.initial_capital,
+            'risk_fraction_confirmed': 0.01,
+            'risk_fraction_forming': best_params.get('risk_fraction_forming', 0.006),
+            'max_positions_total': 10,
+            'max_positions_forming': best_params.get('max_positions_forming', 3),
+            'slippage_bps': 5.0,
+            'commission_per_trade': 1.0,
+        },
+        
+        'exits': {
+            'confirmed': {
+                'move_stop_to_be_at_r': best_params.get('confirmed_move_stop_to_be_at_r', 0.5),
+                'partial_tp_enabled': best_params.get('confirmed_partial_tp_enabled', True),
+                'partial_tp_at_r': best_params.get('confirmed_partial_tp_at_r', 1.0),
+                'partial_tp_fraction': best_params.get('confirmed_partial_tp_fraction', 0.5),
+                'trailing_enabled': best_params.get('confirmed_trailing_enabled', True),
+                'trailing_start_r': best_params.get('confirmed_trailing_start_r', 1.0),
+                'trailing_atr_mult': best_params.get('confirmed_trailing_atr_mult', 2.0),
+            },
+            'forming': {
+                'max_hold_days': best_params.get('forming_max_hold_days', 60),
+                'no_progress_days': best_params.get('forming_no_progress_days', 20),
+                'no_progress_r': best_params.get('forming_no_progress_r', 0.5),
+                'no_progress_action': best_params.get('forming_no_progress_action', 'EXIT'),
+                'tighten_stop_to_r': -0.25,
+            },
+            'atr_length': 14,
+        },
+        
+        'correlation_caps': {
+            'enabled': True,
+            'lookback_days': 60,
+            'max_corr_to_existing': 0.80,
+        },
+        
+        'cluster_caps': {
+            'enabled': True,
+            'n_clusters': 8,
+            'max_positions_per_cluster': 2,
+        },
+        
+        'regime': {
+            'enabled': best_params.get('regime_mode', 'OFF') != 'OFF',
+            'mode': best_params.get('regime_mode', 'SOFT_GATE'),
+            'symbol': 'QQQ',
+            'fast_ma': best_params.get('regime_trend_fast_ma', 50),
+            'slow_ma': best_params.get('regime_trend_slow_ma', 200),
+            'vol_lookback': best_params.get('regime_vol_lookback', 20),
+            'vol_high_threshold': best_params.get('regime_vol_high_threshold', 0.03),
+            'downtrend_forming_mult': best_params.get('regime_downtrend_forming_mult', 0.85),
+            'highvol_forming_mult': best_params.get('regime_highvol_forming_mult', 0.70),
+            'highvol_confirmed_mult': best_params.get('regime_highvol_confirmed_mult', 0.85),
+        },
+        
+        'liquidity': {
+            'min_price': args.min_price,
+            'min_avg_dollar_vol': args.min_dollar_vol,
+            'filter_window': args.liquidity_window,
+            'enabled': not args.disable_liquidity_filter,
+        },
+        
+        'raw_best_params': best_params,
+    }
+    
+    return config
+
+
+def format_robustness_summary(robustness_stats: Dict[str, Any]) -> str:
+    """Format robustness statistics as readable text."""
+    lines = ["ROBUSTNESS GATING SUMMARY", "=" * 40]
+    
+    lines.append(f"Total candidates evaluated: {robustness_stats.get('total_candidates', 0)}")
+    lines.append(f"Total windows: {robustness_stats.get('total_windows', 0)}")
+    lines.append(f"Min pass rate required: {robustness_stats.get('min_pass_rate_required', 0.6):.0%}")
+    lines.append(f"Min median score required: {robustness_stats.get('min_median_score_required', 0.0):.2f}")
+    lines.append(f"Candidates passing gating: {robustness_stats.get('candidates_passing_gating', 0)}")
+    
+    if robustness_stats.get('relaxed_gating'):
+        lines.append(f"\nWARNING: {robustness_stats.get('warning', 'Gating relaxed')}")
+    
+    selected = robustness_stats.get('selected', {})
+    if selected:
+        lines.append("\nSELECTED CONFIG STATS:")
+        lines.append(f"  Pass rate: {selected.get('pass_rate', 0):.1%}")
+        lines.append(f"  Mean score: {selected.get('mean_score', 0):.2f}")
+        lines.append(f"  Median score: {selected.get('median_score', 0):.2f}")
+        lines.append(f"  Score variance: {selected.get('score_variance', 0):.4f}")
+        lines.append(f"  Mean max DD: {selected.get('mean_dd', 0):.2f}%")
+        lines.append(f"  DD variance: {selected.get('dd_variance', 0):.4f}")
+        lines.append(f"  Mean trades: {selected.get('mean_trades', 0):.1f}")
+        lines.append(f"  Mean exposure days: {selected.get('mean_exposure', 0):.1f}")
+        lines.append(f"  Windows passing: {selected.get('windows_passing', 0)}")
+    
+    return "\n".join(lines)
 
 
 def compute_regime_mode_stats(window_results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -939,7 +1168,9 @@ def run_walkforward_optimization(
     use_price_cache: bool = True,
     price_cache_dir: str = "data/price_cache",
     download_batch_size: int = 50,
-) -> Tuple[pd.DataFrame, Dict[str, Any], str]:
+    min_pass_rate: float = 0.60,
+    min_median_test_score: float = 0.0,
+) -> Tuple[pd.DataFrame, Dict[str, Any], str, List[Dict[str, Any]], Dict[str, Any]]:
     """
     Run complete walk-forward optimization v2.
     
@@ -1124,7 +1355,13 @@ def run_walkforward_optimization(
     stability = compute_stability_summary(window_results)
     stability_text = format_stability_summary_v2(stability, window_results)
     
-    best_params, best_mean_score = find_overall_best_params(window_results)
+    best_params, best_mean_score, robustness_stats = find_overall_best_params(
+        window_results,
+        min_pass_rate=min_pass_rate,
+        min_median_test_score=min_median_test_score
+    )
+    
+    robustness_text = format_robustness_summary(robustness_stats)
     
     valid_test_scores = [r['test_score'] for r in window_results if r['test_score'] != float('-inf')]
     quality_test_scores = [r['test_score'] for r in window_results if r.get('test_quality', False)]
@@ -1143,7 +1380,9 @@ def run_walkforward_optimization(
         f"Mean test score: {mean_test_score:.2f}",
         f"Median test score: {median_test_score:.2f}",
         "",
-        "OVERALL BEST PARAMETERS (by mean OOS score):",
+        robustness_text,
+        "",
+        "OVERALL BEST PARAMETERS (by median OOS score + stability):",
         json.dumps(best_params, indent=2),
         f"Mean OOS score: {best_mean_score:.2f}",
         "",
@@ -1155,7 +1394,48 @@ def run_walkforward_optimization(
     
     print("\n" + summary_text)
     
-    return results_df, best_params, summary_text
+    return results_df, best_params, summary_text, window_results, robustness_stats
+
+
+def run_validation(args):
+    """Run validation on best config file."""
+    import subprocess
+    
+    config_path = args.validate_config
+    if not os.path.exists(config_path):
+        print(f"ERROR: Config file not found: {config_path}")
+        print("Run optimization first: python optimize.py --universe nasdaq --max-stocks 200")
+        return
+    
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    print("\n" + "=" * 60)
+    print("VALIDATION MODE")
+    print("=" * 60)
+    print(f"Config file: {config_path}")
+    print(f"Generated: {config.get('meta', {}).get('generated_at', 'unknown')}")
+    print(f"Stocks: {args.validate_stocks}")
+    print("=" * 60)
+    
+    cmd = [
+        'python', 'main.py',
+        '--config', config_path,
+        '--universe', 'nasdaq',
+        '--max-stocks', str(args.validate_stocks),
+        '--backtest-v2'
+    ]
+    
+    print(f"\nRunning: {' '.join(cmd)}\n")
+    
+    result = subprocess.run(cmd, capture_output=False)
+    
+    if result.returncode == 0:
+        print("\n" + "=" * 60)
+        print("VALIDATION COMPLETE!")
+        print("=" * 60)
+    else:
+        print(f"\nValidation failed with exit code: {result.returncode}")
 
 
 def main():
@@ -1216,6 +1496,18 @@ def main():
     parser.add_argument('--clear-price-cache', action='store_true',
                        help='Clear price cache before running')
     
+    parser.add_argument('--min-pass-rate', type=float, default=0.60,
+                       help='Minimum window pass rate for robustness gating (0.6 = 60%%)')
+    parser.add_argument('--min-median-test-score', type=float, default=0.0,
+                       help='Minimum median test score required')
+    
+    parser.add_argument('--validate-best', action='store_true',
+                       help='Run validation on best config (load outputs/strategy_best_config.json)')
+    parser.add_argument('--validate-config', type=str, default='outputs/strategy_best_config.json',
+                       help='Path to config file for validation')
+    parser.add_argument('--validate-stocks', type=int, default=300,
+                       help='Number of stocks for validation (default 300)')
+    
     args = parser.parse_args()
     
     if args.refresh_symbol_cache:
@@ -1223,6 +1515,10 @@ def main():
     
     if args.clear_price_cache:
         clear_price_cache(args.price_cache_dir)
+    
+    if args.validate_best:
+        run_validation(args)
+        return
     
     if args.universe == 'nasdaq':
         symbols = get_nasdaq_symbols_cached(limit=args.max_stocks)
@@ -1240,7 +1536,7 @@ def main():
         'window': args.liquidity_window,
     }
     
-    results_df, best_params, summary_text = run_walkforward_optimization(
+    results_df, best_params, summary_text, window_results, robustness_stats = run_walkforward_optimization(
         symbols=symbols,
         liquidity_config=liquidity_config,
         train_bars=args.train_bars,
@@ -1257,6 +1553,8 @@ def main():
         use_price_cache=not args.disable_price_cache,
         price_cache_dir=args.price_cache_dir,
         download_batch_size=args.download_batch_size,
+        min_pass_rate=args.min_pass_rate,
+        min_median_test_score=args.min_median_test_score,
     )
     
     os.makedirs('outputs', exist_ok=True)
@@ -1267,6 +1565,11 @@ def main():
     with open('outputs/walkforward_best_params.json', 'w') as f:
         json.dump(best_params, f, indent=2)
     print(f"Best params saved to: outputs/walkforward_best_params.json")
+    
+    strategy_config = build_strategy_config(best_params, args, robustness_stats, window_results)
+    with open('outputs/strategy_best_config.json', 'w') as f:
+        json.dump(strategy_config, f, indent=2, default=str)
+    print(f"Full strategy config saved to: outputs/strategy_best_config.json")
     
     with open('outputs/walkforward_summary.txt', 'w') as f:
         f.write(summary_text)

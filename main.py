@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 import os
 
@@ -357,6 +358,8 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
+    parser.add_argument('--config', type=str, default=None,
+                       help='Path to strategy config JSON (from optimize.py)')
     parser.add_argument('--symbols', nargs='+', default=None,
                        help='Specific stock symbols to scan (space-separated)')
     parser.add_argument('--max-stocks', type=int, default=50,
@@ -494,10 +497,133 @@ def main():
     
     args = parser.parse_args()
     
+    loaded_config = None
+    if args.config:
+        if os.path.exists(args.config):
+            with open(args.config, 'r') as f:
+                loaded_config = json.load(f)
+            print("\n" + "=" * 60)
+            print("CONFIG LOADED")
+            print("=" * 60)
+            print(f"Config file: {args.config}")
+            print(f"Generated: {loaded_config.get('meta', {}).get('generated_at', 'unknown')}")
+            print(f"Regime mode: {loaded_config.get('regime', {}).get('mode', 'unknown')}")
+            print(f"Robustness pass rate: {loaded_config.get('robustness', {}).get('selected', {}).get('pass_rate', 0):.1%}")
+            print("=" * 60 + "\n")
+        else:
+            print(f"Warning: Config file not found: {args.config}")
+    
     if args.refresh_symbol_cache:
         refresh_symbol_cache()
     
     config = DEFAULT_CONFIG.copy()
+    
+    if loaded_config:
+        det = loaded_config.get('detection', {})
+        if det.get('price_tolerance') is not None:
+            args.price_tolerance = det['price_tolerance']
+        if det.get('min_peak_height') is not None:
+            args.min_peak_height = det['min_peak_height']
+        if det.get('min_separation') is not None:
+            args.min_separation = det['min_separation']
+        if det.get('max_separation') is not None:
+            args.max_separation = det['max_separation']
+        if det.get('lookback_days') is not None:
+            args.lookback_days = det['lookback_days']
+        
+        port = loaded_config.get('portfolio', {})
+        if port.get('initial_capital') is not None:
+            args.initial_capital = port['initial_capital']
+        if port.get('risk_fraction_confirmed') is not None:
+            args.risk_confirmed = port['risk_fraction_confirmed']
+        if port.get('risk_fraction_forming') is not None:
+            args.risk_forming = port['risk_fraction_forming']
+        if port.get('max_positions_total') is not None:
+            args.max_positions_total = port['max_positions_total']
+        if port.get('max_positions_forming') is not None:
+            args.max_positions_forming = port['max_positions_forming']
+        
+        exits = loaded_config.get('exits', {})
+        confirmed_exits = exits.get('confirmed', {})
+        if confirmed_exits.get('move_stop_to_be_at_r') is not None:
+            args.confirmed_move_stop_to_be_at_r = confirmed_exits['move_stop_to_be_at_r']
+        if confirmed_exits.get('partial_tp_enabled') is not None:
+            args.confirmed_partial_tp_enabled = 'true' if confirmed_exits['partial_tp_enabled'] else 'false'
+        if confirmed_exits.get('partial_tp_at_r') is not None:
+            args.confirmed_partial_tp_at_r = confirmed_exits['partial_tp_at_r']
+        if confirmed_exits.get('partial_tp_fraction') is not None:
+            args.confirmed_partial_tp_fraction = confirmed_exits['partial_tp_fraction']
+        if confirmed_exits.get('trailing_enabled') is not None:
+            args.confirmed_trailing_enabled = 'true' if confirmed_exits['trailing_enabled'] else 'false'
+        if confirmed_exits.get('trailing_start_r') is not None:
+            args.confirmed_trailing_start_r = confirmed_exits['trailing_start_r']
+        if confirmed_exits.get('trailing_atr_mult') is not None:
+            args.confirmed_trailing_atr_mult = confirmed_exits['trailing_atr_mult']
+        
+        forming_exits = exits.get('forming', {})
+        if forming_exits.get('max_hold_days') is not None:
+            args.forming_max_hold_days = forming_exits['max_hold_days']
+        if forming_exits.get('no_progress_days') is not None:
+            args.forming_no_progress_days = forming_exits['no_progress_days']
+        if forming_exits.get('no_progress_r') is not None:
+            args.forming_no_progress_r = forming_exits['no_progress_r']
+        if forming_exits.get('no_progress_action') is not None:
+            args.forming_no_progress_action = forming_exits['no_progress_action']
+        if forming_exits.get('tighten_stop_to_r') is not None:
+            args.forming_tighten_stop_to_r = forming_exits['tighten_stop_to_r']
+        
+        if exits.get('atr_length') is not None:
+            args.atr_length = exits['atr_length']
+        
+        corr = loaded_config.get('correlation_caps', {})
+        if corr.get('enabled') is not None:
+            args.use_correlation_caps = 'true' if corr['enabled'] else 'false'
+        if corr.get('lookback_days') is not None:
+            args.corr_lookback_days = corr['lookback_days']
+        if corr.get('max_corr_to_existing') is not None:
+            args.max_corr_to_existing = corr['max_corr_to_existing']
+        
+        cluster = loaded_config.get('cluster_caps', {})
+        if cluster.get('enabled') is not None:
+            args.use_cluster_caps = 'true' if cluster['enabled'] else 'false'
+        if cluster.get('n_clusters') is not None:
+            args.n_clusters = cluster['n_clusters']
+        if cluster.get('max_positions_per_cluster') is not None:
+            args.max_positions_per_cluster = cluster['max_positions_per_cluster']
+        
+        regime = loaded_config.get('regime', {})
+        if regime.get('enabled') is not None:
+            args.use_regime_filter = 'true' if regime['enabled'] else 'false'
+        if regime.get('symbol') is not None:
+            args.regime_symbol = regime['symbol']
+        if regime.get('fast_ma') is not None:
+            args.regime_fast_ma = regime['fast_ma']
+        if regime.get('slow_ma') is not None:
+            args.regime_slow_ma = regime['slow_ma']
+        if regime.get('vol_lookback') is not None:
+            args.regime_vol_lookback = regime['vol_lookback']
+        if regime.get('vol_high_threshold') is not None:
+            args.regime_vol_high_threshold = regime['vol_high_threshold']
+        if regime.get('mode') == 'SOFT_GATE':
+            args.regime_soft_gate = 'true'
+        elif regime.get('mode') == 'HARD_SKIP':
+            args.regime_soft_gate = 'false'
+        if regime.get('downtrend_forming_mult') is not None:
+            args.regime_downtrend_forming_mult = regime['downtrend_forming_mult']
+        if regime.get('highvol_forming_mult') is not None:
+            args.regime_highvol_forming_mult = regime['highvol_forming_mult']
+        if regime.get('highvol_confirmed_mult') is not None:
+            args.regime_highvol_confirmed_mult = regime['highvol_confirmed_mult']
+        
+        liq = loaded_config.get('liquidity', {})
+        if liq.get('min_price') is not None:
+            args.min_price = liq['min_price']
+        if liq.get('min_avg_dollar_vol') is not None:
+            args.min_dollar_vol = liq['min_avg_dollar_vol']
+        if liq.get('filter_window') is not None:
+            args.liquidity_window = liq['filter_window']
+        if liq.get('enabled') is not None:
+            args.disable_liquidity_filter = not liq['enabled']
     config['price_tolerance'] = args.price_tolerance
     config['min_peak_height'] = args.min_peak_height
     config['min_separation'] = args.min_separation
@@ -673,7 +799,6 @@ def main():
         split_metrics = compute_split_metrics(enriched_trades, equity_df)
         print_metrics_report(split_metrics)
         
-        import json
         with open('outputs/metrics.json', 'w') as f:
             serializable_metrics = {}
             for key, val in split_metrics.items():

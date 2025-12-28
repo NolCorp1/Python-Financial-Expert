@@ -1,5 +1,59 @@
 # NASDAQ Double Bottom Pattern Scanner
 
+## Workflow: Optimize -> Validate -> Run
+
+The scanner follows a three-phase workflow for production use:
+
+### 1. Optimization (Train)
+```bash
+# Small-scale optimization (fast, for testing)
+python optimize.py --universe nasdaq --max-stocks 100 \
+  --train-bars 504 --test-bars 126 --step-bars 126 \
+  --grid-size-limit 50 --min-trades-test 10
+
+# Full optimization (200+ symbols, comprehensive grid)
+python optimize.py --universe nasdaq --max-stocks 200 \
+  --train-bars 504 --test-bars 126 --step-bars 126 \
+  --objective composite --grid-size-limit 250 \
+  --min-trades-test 20 --min-exposure-days-test 20
+```
+Outputs: `outputs/strategy_best_config.json` (full config), `outputs/walkforward_results.csv`
+
+### 2. Validation (Out-of-Sample Test)
+```bash
+# Validate on larger universe (300 stocks)
+python optimize.py --validate-best --validate-stocks 300
+
+# Or use main.py directly with config
+python main.py --config outputs/strategy_best_config.json \
+  --universe nasdaq --max-stocks 300 --backtest-v2
+```
+This runs a full backtest on fresh symbols using the optimized config.
+
+### 3. Production Run (Live Scanning)
+```bash
+# Scan with optimized config
+python main.py --config outputs/strategy_best_config.json \
+  --universe nasdaq --max-stocks 500
+
+# Scan + backtest with config
+python main.py --config outputs/strategy_best_config.json \
+  --universe nasdaq --max-stocks 500 --backtest-v2
+```
+
+### Config File Structure
+The `strategy_best_config.json` includes:
+- **meta**: generation timestamp, version
+- **optimization**: training parameters used
+- **robustness**: pass rate, median score, stability stats
+- **detection**: price_tolerance, min_peak_height, separation
+- **portfolio**: risk fractions, position limits
+- **exits**: partial TP, trailing stops, no-progress rules
+- **correlation_caps**: lookback, max correlation
+- **cluster_caps**: n_clusters, max per cluster
+- **regime**: mode, MA periods, risk multipliers
+- **liquidity**: min price, min dollar volume
+
 ## Overview
 A comprehensive Python program that scans for double bottom ("W") chart patterns in NASDAQ-listed stocks using historical price data from yfinance. The scanner uses algorithmic pattern detection with scipy, RSI divergence confirmation, and volume analysis. Includes a full backtesting engine to evaluate strategy performance.
 
