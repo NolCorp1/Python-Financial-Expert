@@ -1,0 +1,168 @@
+Task 11 — Market Regime Filter (QQQ/SPY Trend + Volatility) + Dynamic Risk
+==============================================================================
+Objective
+---------
+Improve robustness by conditioning trade acceptance and risk on market regime.
+Implement:
+1) Market trend regime (QQQ or SPY): uptrend / downtrend
+2) Volatility regime: low / high (ATR% or VIX proxy)
+3) Dynamic behavior:
+   - In risk-on/uptrend: allow FORMING + CONFIRMED, normal risk
+   - In neutral: allow CONFIRMED, reduce FORMING risk/cap
+   - In risk-off/downtrend or high vol: disable FORMING, tighten risk, optionally require CONFIRMED only
+
+This task should materially reduce drawdowns and improve walk-forward stability.
+
+Files to Edit
+-------------
+- backtester.py (entry gating + dynamic config adjustment)
+- main.py (CLI flags)
+- (optional) optimize.py (include regime params in grid later)
+- (optional) universe.py (no changes required)
+
+Design Requirements
+-------------------
+- No-lookahead: regime determination for day t uses data up to t-1 only.
+- Use a single benchmark: QQQ by default (NASDAQ strategies), allow SPY via CLI.
+- Keep v1 simple: MA trend + ATR% volatility.
+
+1) Add Regime Config Fields to BacktestConfig
+---------------------------------------------
+In backtester.py add:
+
+- use_regime_filter: bool = True
+- regime_symbol: str = "QQQ"
+- regime_trend_fast_ma: int = 50
+- regime_trend_slow_ma: int = 200
+- regime_vol_lookback: int = 20
+- regime_vol_high_threshold: float = 0.03     # ATR% > 3% considered high vol
+
+Dynamic behavior toggles:
+- regime_disable_forming_in_downtrend: bool = True
+- regime_disable_forming_in_high_vol: bool = True
+- regime_reduce_risk_in_high_vol: bool = True
+- regime_high_vol_risk_multiplier: float = 0.70  # multiply risk fractions in high vol
+
+Optional:
+- regime_reduce_max_positions_in_high_vol: bool = True
+- regime_high_vol_max_positions_multiplier: float = 0.70
+
+2) Fetch Regime Data
+--------------------
+Ensure regime_symbol price data is available in backtests:
+- When building price_data_by_symbol, also download regime_symbol with same date range.
+- Or ensure main.py always includes it in downloads when --use-regime-filter true.
+
+3) Compute Regime Series (No Lookahead)
+---------------------------------------
+Create helper in backtester.py:
+
+    def compute_regime(df_regime: pd.DataFrame, cfg: BacktestConfig) -> pd.DataFrame
+
+Compute:
+- fast_ma = Close.rolling(fast).mean()
+- slow_ma = Close.rolling(slow).mean()
+- trend = "UP" if fast_ma > slow_ma else "DOWN"
+
+Volatility:
+- ATR = compute_atr(df_regime, length=cfg.regime_vol_lookback)
+- atr_pct = ATR / Close
+- vol = "HIGH" if atr_pct > cfg.regime_vol_high_threshold else "NORMAL"
+
+Important:
+- Shift regime outputs by 1 bar for decisions at day t:
+    trend_signal = trend.shift(1)
+    vol_signal = vol.shift(1)
+
+Return DataFrame with:
+- date index
+- trend_signal
+- atr_pct_shifted
+- vol_signal
+
+4) Apply Regime Gating at Entry Time
+------------------------------------
+In run_backtest(), on each entry_date:
+- Look up regime state for that date (already shifted).
+- If missing regime state -> default to allow (or skip; pick allow for v1).
+
+Rules (v1):
+A) If trend_signal == "DOWN" and cfg.regime_disable_forming_in_downtrend:
+   - Reject FORMING signals (skip counter: skipped_regime_forming_downtrend++)
+
+B) If vol_signal == "HIGH" and cfg.regime_disable_forming_in_high_vol:
+   - Reject FORMING signals (skip counter: skipped_regime_forming_highvol++)
+
+C) If vol_signal == "HIGH" and cfg.regime_reduce_risk_in_high_vol:
+   - Multiply risk budgets by cfg.regime_high_vol_risk_multiplier for BOTH kinds.
+
+D) Optional: reduce max positions in high vol:
+   - max_positions_total_effective = floor(cfg.max_positions_total * multiplier)
+   - same for forming caps if desired
+
+5) Add Skip Counters + Logging
+------------------------------
+Add counters:
+- skipped_regime_forming_downtrend
+- skipped_regime_forming_highvol
+
+Print in summary.
+
+Optionally write:
+- outputs/regime_summary.csv:
+    date, trend_signal, atr_pct, vol_signal, open_positions_total
+
+6) CLI Flags (main.py)
+----------------------
+Add:
+- --use-regime-filter true/false
+- --regime-symbol QQQ|SPY
+- --regime-fast-ma 50
+- --regime-slow-ma 200
+- --regime-vol-lookback 20
+- --regime-vol-high-threshold 0.03
+- --regime-disable-forming-in-downtrend true/false
+- --regime-disable-forming-in-high-vol true/false
+- --regime-reduce-risk-in-high-vol true/false
+- --regime-high-vol-risk-multiplier 0.70
+
+Optional:
+- --regime-reduce-max-positions-in-high-vol true/false
+- --regime-high-vol-max-positions-multiplier 0.70
+
+7) Acceptance Criteria
+----------------------
+A) Backtests run with regime filter enabled by default
+B) FORMING signals are skipped in downtrend/high-vol regimes (counters > 0 on broad runs)
+C) Max DD improves vs same run with regime filter off
+D) Total return does not collapse (expect slightly fewer trades, better stability)
+E) No-lookahead maintained:
+   - regime signals used are shifted by 1 bar
+
+8) Manual Test Plan
+-------------------
+1) Baseline with caps (Task 10):
+   python main.py --universe nasdaq --max-stocks 200 --backtest-v2
+
+2) Regime filter ON:
+   python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --use-regime-filter true
+
+3) Regime filter OFF:
+   python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --use-regime-filter false
+
+Compare:
+- total return
+- max DD
+- exposure days
+- forming trade count
+- skip counters
+
+4) Sensitivity:
+- try vol threshold 0.025 vs 0.035
+- try multiplier 0.6 vs 0.8
+
+Non-Goals
+---------
+- Intraday regime updates
+- Multi-regime classification (bull/bear/sideways)
+- Walk-forward including regime params (Task 12)
