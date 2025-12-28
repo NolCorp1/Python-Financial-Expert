@@ -126,19 +126,8 @@ def load_from_cache(symbol: str, cache_dir: str) -> Optional[pd.DataFrame]:
 
 
 def save_to_cache(symbol: str, df: pd.DataFrame, cache_dir: str) -> bool:
-    """Save price data to parquet cache."""
-    if df is None or df.empty:
-        return False
-    
-    cache_path = get_cache_path(symbol, cache_dir)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    try:
-        df.to_parquet(cache_path)
-        return True
-    except Exception as e:
-        print(f"Warning: Failed to save cache for {symbol}: {e}")
-        return False
+    """Save price data to parquet cache (uses atomic write internally)."""
+    return save_to_cache_atomic(symbol, df, cache_dir)
 
 
 def batch_download_yfinance(
@@ -347,3 +336,258 @@ def get_cache_stats(cache_dir: str = "data/price_cache") -> Dict:
         'oldest': oldest_file,
         'newest': newest_file,
     }
+
+
+def validate_price_data(df: pd.DataFrame, symbol: str = "") -> Dict:
+    """
+    Validate price data integrity.
+    
+    Checks for:
+    - Required OHLC columns exist and are numeric
+    - NaN values in OHLC
+    - Zero or negative prices
+    - Large gaps in dates (>5 consecutive business days)
+    - Duplicate dates
+    
+    Returns:
+        Dict with validation results and issues found
+    """
+    issues = []
+    
+    required_cols = ['Open', 'High', 'Low', 'Close']
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        issues.append(f"Missing columns: {missing_cols}")
+        return {'valid': False, 'issues': issues, 'nan_count': 0, 'duplicate_dates': 0}
+    
+    nan_count = df[required_cols].isna().sum().sum()
+    if nan_count > 0:
+        issues.append(f"NaN values in OHLC: {nan_count}")
+    
+    for col in required_cols:
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            issues.append(f"Non-numeric column: {col}")
+    
+    negative_prices = (df[required_cols] <= 0).sum().sum()
+    if negative_prices > 0:
+        issues.append(f"Zero/negative prices: {negative_prices}")
+    
+    duplicate_dates = df.index.duplicated().sum()
+    if duplicate_dates > 0:
+        issues.append(f"Duplicate dates: {duplicate_dates}")
+    
+    if len(df) > 1:
+        dates = pd.DatetimeIndex(df.index)
+        business_days = pd.bdate_range(dates.min(), dates.max())
+        missing_days = len(business_days) - len(dates)
+        
+        if len(dates) > 2:
+            date_diffs = dates[1:] - dates[:-1]
+            max_gap_days = date_diffs.max().days if len(date_diffs) > 0 else 0
+            if max_gap_days > 10:
+                issues.append(f"Large gap in dates: {max_gap_days} days")
+    
+    return {
+        'valid': len(issues) == 0,
+        'issues': issues,
+        'nan_count': nan_count,
+        'duplicate_dates': duplicate_dates,
+        'rows': len(df),
+        'start': str(df.index.min()) if len(df) > 0 else None,
+        'end': str(df.index.max()) if len(df) > 0 else None,
+    }
+
+
+def normalize_price_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize price data for consistency.
+    
+    - Strip timezone info (convert to naive UTC)
+    - Sort by date
+    - Remove duplicate dates (keep first)
+    - Ensure sorted ascending
+    """
+    if df is None or df.empty:
+        return df
+    
+    df = df.copy()
+    
+    if df.index.tzinfo is not None:
+        df.index = df.index.tz_localize(None)
+    
+    if df.index.duplicated().any():
+        df = df[~df.index.duplicated(keep='first')]
+    
+    df = df.sort_index()
+    
+    return df
+
+
+def save_to_cache_atomic(symbol: str, df: pd.DataFrame, cache_dir: str) -> bool:
+    """
+    Save price data to parquet cache with atomic write (temp file + rename).
+    
+    This prevents corruption if the process is interrupted during write.
+    """
+    if df is None or df.empty:
+        return False
+    
+    cache_path = get_cache_path(symbol, cache_dir)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    temp_path = cache_path.with_suffix('.parquet.tmp')
+    
+    try:
+        df = normalize_price_data(df)
+        
+        df.to_parquet(temp_path)
+        
+        temp_path.rename(cache_path)
+        return True
+    except Exception as e:
+        print(f"Warning: Failed to save cache for {symbol}: {e}")
+        if temp_path.exists():
+            temp_path.unlink()
+        return False
+
+
+def repair_cache_entry(
+    symbol: str,
+    cache_dir: str,
+    start_date: datetime,
+    end_date: datetime,
+    verbose: bool = True
+) -> bool:
+    """
+    Repair a corrupt or invalid cache entry by re-downloading.
+    
+    Returns True if repair successful.
+    """
+    if verbose:
+        print(f"Repairing cache for {symbol}...")
+    
+    cache_path = get_cache_path(symbol, cache_dir)
+    if cache_path.exists():
+        try:
+            cache_path.unlink()
+        except:
+            pass
+    
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(start=start_date, end=end_date)
+        
+        if df is not None and len(df) > 50:
+            df = normalize_price_data(df)
+            return save_to_cache_atomic(symbol, df, cache_dir)
+    except Exception as e:
+        if verbose:
+            print(f"  Failed to repair {symbol}: {e}")
+    
+    return False
+
+
+def generate_cache_report(
+    symbols: List[str],
+    cache_dir: str = "data/price_cache",
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    auto_repair: bool = False,
+    verbose: bool = True
+) -> pd.DataFrame:
+    """
+    Generate integrity report for cached price data.
+    
+    Args:
+        symbols: List of symbols to check
+        cache_dir: Cache directory
+        start_date: Required start date (for repair)
+        end_date: Required end date (for repair)
+        auto_repair: Automatically repair invalid entries
+        verbose: Show progress
+    
+    Returns:
+        DataFrame with columns: symbol, cached, downloaded, rows, start, end, 
+                                nan_count, duplicate_dates, status
+    """
+    reports = []
+    
+    iterator = tqdm(symbols, desc="Checking cache integrity") if verbose else symbols
+    
+    for symbol in iterator:
+        cache_path = get_cache_path(symbol, cache_dir)
+        cached = cache_path.exists()
+        
+        if not cached:
+            reports.append({
+                'symbol': symbol,
+                'cached': False,
+                'downloaded': False,
+                'rows': 0,
+                'start': None,
+                'end': None,
+                'nan_count': 0,
+                'duplicate_dates': 0,
+                'status': 'missing',
+            })
+            continue
+        
+        try:
+            df = pd.read_parquet(cache_path)
+            validation = validate_price_data(df, symbol)
+            
+            status = 'ok' if validation['valid'] else 'invalid'
+            
+            if not validation['valid'] and auto_repair and start_date and end_date:
+                if repair_cache_entry(symbol, cache_dir, start_date, end_date, verbose=False):
+                    status = 'repaired'
+                else:
+                    status = 'repair_failed'
+            
+            reports.append({
+                'symbol': symbol,
+                'cached': True,
+                'downloaded': False,
+                'rows': validation.get('rows', 0),
+                'start': validation.get('start'),
+                'end': validation.get('end'),
+                'nan_count': validation.get('nan_count', 0),
+                'duplicate_dates': validation.get('duplicate_dates', 0),
+                'status': status,
+            })
+            
+        except Exception as e:
+            status = 'corrupt'
+            
+            if auto_repair and start_date and end_date:
+                if repair_cache_entry(symbol, cache_dir, start_date, end_date, verbose=False):
+                    status = 'repaired'
+                else:
+                    status = 'repair_failed'
+            
+            reports.append({
+                'symbol': symbol,
+                'cached': True,
+                'downloaded': False,
+                'rows': 0,
+                'start': None,
+                'end': None,
+                'nan_count': 0,
+                'duplicate_dates': 0,
+                'status': status,
+            })
+    
+    report_df = pd.DataFrame(reports)
+    
+    os.makedirs('outputs', exist_ok=True)
+    report_df.to_csv('outputs/price_cache_report.csv', index=False)
+    
+    if verbose:
+        n_ok = len(report_df[report_df['status'] == 'ok'])
+        n_invalid = len(report_df[report_df['status'].isin(['invalid', 'corrupt'])])
+        n_repaired = len(report_df[report_df['status'] == 'repaired'])
+        n_missing = len(report_df[report_df['status'] == 'missing'])
+        print(f"\nCache report: {n_ok} ok, {n_invalid} invalid, {n_repaired} repaired, {n_missing} missing")
+        print(f"Report saved to: outputs/price_cache_report.csv")
+    
+    return report_df

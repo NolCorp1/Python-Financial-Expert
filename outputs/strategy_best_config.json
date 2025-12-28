@@ -1,17 +1,17 @@
 {
   "meta": {
-    "generated_at": "2025-12-28T23:35:33.461086",
+    "generated_at": "2025-12-28T23:53:56.547688",
     "generator": "optimize.py walk-forward v2",
     "version": "1.0.0"
   },
   "optimization": {
     "universe_used": "demo",
-    "max_stocks_used": 10,
+    "max_stocks_used": 8,
     "train_bars": 252,
     "test_bars": 63,
     "step_bars": 63,
     "objective": "composite",
-    "grid_size_limit": 10,
+    "grid_size_limit": 5,
     "min_trades_test": 2,
     "min_exposure_days_test": 20,
     "max_dd_train": 0.18,
@@ -21,7 +21,7 @@
     "windows_completed": 12
   },
   "robustness": {
-    "total_candidates": 3,
+    "total_candidates": 1,
     "total_windows": 12,
     "min_pass_rate_required": 0.6,
     "min_median_score_required": 0.0,
@@ -29,15 +29,15 @@
     "relaxed_gating": true,
     "warning": "No candidates met robustness criteria, using best available",
     "selected": {
-      "pass_rate": 0.08333333333333333,
-      "mean_score": 1.1375,
-      "median_score": 1.1375,
-      "score_variance": 0,
-      "mean_dd": -0.15,
-      "dd_variance": 0,
-      "mean_trades": 3.0,
-      "mean_exposure": 17.0,
-      "windows_passing": 1
+      "pass_rate": 0.25,
+      "mean_score": -0.6783333333333333,
+      "median_score": -0.8099999999999999,
+      "score_variance": 0.03533472222222222,
+      "mean_dd": -0.5466666666666666,
+      "dd_variance": 0.002422222222222222,
+      "mean_trades": 2.3333333333333335,
+      "mean_exposure": 12.666666666666666,
+      "windows_passing": 3
     }
   },
   "detection": {
@@ -94,10 +94,10 @@
     "fast_ma": 50,
     "slow_ma": 150,
     "vol_lookback": 20,
-    "vol_high_threshold": 0.03,
-    "downtrend_forming_mult": 0.85,
+    "vol_high_threshold": 0.025,
+    "downtrend_forming_mult": 1.0,
     "highvol_forming_mult": 0.85,
-    "highvol_confirmed_mult": 0.9
+    "highvol_confirmed_mult": 1.0
   },
   "liquidity": {
     "min_price": 5.0,
@@ -123,13 +123,13 @@
     "max_sep": 260,
     "min_sep": 20,
     "neckline_min_rise": 0.08,
-    "regime_downtrend_forming_mult": 0.85,
-    "regime_highvol_confirmed_mult": 0.9,
+    "regime_downtrend_forming_mult": 1.0,
+    "regime_highvol_confirmed_mult": 1.0,
     "regime_highvol_forming_mult": 0.85,
     "regime_mode": "SOFT_GATE",
     "regime_trend_fast_ma": 50,
     "regime_trend_slow_ma": 150,
-    "regime_vol_high_threshold": 0.03,
+    "regime_vol_high_threshold": 0.025,
     "regime_vol_lookback": 20,
     "risk_fraction_forming": 0.004,
     "stop_loss_buffer": 0.02

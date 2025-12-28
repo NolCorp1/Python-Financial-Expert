@@ -1,0 +1,65 @@
+{
+  "run_id": "20251228_235526_c64f918e",
+  "timestamp": "2025-12-28T23:55:28.080536",
+  "mode": "backtest",
+  "command_line": "python main.py --config outputs/strategy_best_config.json --universe demo --max-stocks 5 --symbols-seed 42 --backtest-v2",
+  "git_commit": "8ba381c5c4cd",
+  "versions": {
+    "python": "3.12.11",
+    "platform": "Linux 6.14.11",
+    "yfinance": "1.0",
+    "pandas": "2.3.3",
+    "numpy": "2.2.6",
+    "scipy": "1.16.3",
+    "pyarrow": "22.0.0"
+  },
+  "universe": {
+    "type": "demo",
+    "symbols_requested": 5,
+    "symbols_used": 5
+  },
+  "date_range": {
+    "start": null,
+    "end": null
+  },
+  "liquidity_config": {
+    "min_price": 5.0,
+    "min_avg_dollar_vol": 20000000,
+    "window": 20
+  },
+  "cache_stats": {
+    "exists": true,
+    "count": 101,
+    "size_mb": 7.9793901443481445,
+    "oldest": "AAL",
+    "newest": "TXN"
+  },
+  "strategy_config": {
+    "detection": {
+      "price_tolerance": 0.04,
+      "min_peak_height": 0.08,
+      "min_separation": 20,
+      "max_separation": 260,
+      "lookback_days": 504
+    },
+    "portfolio": {
+      "initial_capital": 100000.0,
+      "risk_confirmed": 0.01,
+      "risk_forming": 0.004,
+      "max_positions_total": 10,
+      "max_positions_forming": 4
+    },
+    "regime": {
+      "enabled": true,
+      "soft_gate": true
+    }
+  },
+  "extra": {
+    "symbols_seed": 42,
+    "metrics": {
+      "total_return": 3.08,
+      "max_dd": 0,
+      "trades": 30
+    }
+  }
+}

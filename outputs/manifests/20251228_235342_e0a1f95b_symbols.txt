@@ -1,0 +1,13 @@
+# Symbols for run: 20251228_235342_e0a1f95b
+# Generated: 2025-12-28T23:53:56.562110
+# Mode: optimize
+# Count: 8
+
+AAPL
+ADBE
+AMAT
+GOOGL
+MU
+PYPL
+TSLA
+TXN

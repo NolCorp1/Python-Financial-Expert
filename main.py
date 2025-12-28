@@ -495,6 +495,11 @@ def main():
     parser.add_argument('--regime-highvol-confirmed-mult', type=float, default=0.85,
                        help='Risk multiplier for CONFIRMED in high vol (0.85 = 85%%)')
     
+    parser.add_argument('--symbols-seed', type=int, default=None,
+                       help='Random seed for deterministic symbol subset selection')
+    parser.add_argument('--parity-check', action='store_true',
+                       help='Run parity check to verify config produces same results')
+    
     args = parser.parse_args()
     
     loaded_config = None
@@ -630,23 +635,49 @@ def main():
     config['max_separation'] = args.max_separation
     config['lookback_days'] = args.lookback_days
     
+    import random as _random
+    from manifest import generate_run_id, create_manifest, save_manifest
+    from price_cache import get_cache_stats
+    
+    symbols_requested = args.max_stocks or 0
+    
     if args.symbols:
-        symbols = args.symbols
+        symbols = sorted(args.symbols)
         universe_name = 'custom'
+        symbols_requested = len(symbols)
     elif args.universe == 'nasdaq':
-        symbols = get_nasdaq_symbols_cached(
+        all_symbols = get_nasdaq_symbols_cached(
             max_age_hours=args.symbols_cache_max_age_hours,
-            limit=args.max_stocks
+            limit=None
         )
+        all_symbols = sorted(all_symbols)
+        
+        if args.max_stocks and args.max_stocks < len(all_symbols):
+            if args.symbols_seed is not None:
+                _random.seed(args.symbols_seed)
+                symbols = sorted(_random.sample(all_symbols, args.max_stocks))
+            else:
+                symbols = all_symbols[:args.max_stocks]
+        else:
+            symbols = all_symbols
         universe_name = 'nasdaq'
+        symbols_requested = args.max_stocks or len(all_symbols)
     elif args.universe == 'demo':
-        symbols = get_demo_symbols()
+        symbols = sorted(get_demo_symbols())
         if args.max_stocks:
-            symbols = symbols[:args.max_stocks]
+            if args.symbols_seed is not None:
+                _random.seed(args.symbols_seed)
+                symbols = sorted(_random.sample(symbols, min(args.max_stocks, len(symbols))))
+            else:
+                symbols = symbols[:args.max_stocks]
         universe_name = 'demo'
+        symbols_requested = args.max_stocks or len(symbols)
     else:
-        symbols = get_nasdaq_symbols(max_symbols=args.max_stocks)
+        symbols = sorted(get_nasdaq_symbols(max_symbols=args.max_stocks))
         universe_name = 'legacy'
+        symbols_requested = len(symbols)
+    
+    run_id = generate_run_id()
     
     use_liquidity_filter = not args.disable_liquidity_filter
     liquidity_config = {
@@ -654,6 +685,110 @@ def main():
         'min_avg_dollar_vol': args.min_dollar_vol,
         'window': args.liquidity_window,
     }
+    
+    if args.parity_check and args.config:
+        print("\n" + "="*60)
+        print("PARITY CHECK MODE")
+        print("="*60)
+        print("Running backtest twice to verify reproducibility...")
+        print("Config:", args.config)
+        print("="*60 + "\n")
+        
+        import subprocess
+        import tempfile
+        
+        base_cmd = [
+            'python', 'main.py',
+            '--config', args.config,
+            '--universe', args.universe,
+            '--max-stocks', str(args.max_stocks),
+            '--backtest-v2',
+        ]
+        if args.symbols_seed is not None:
+            base_cmd += ['--symbols-seed', str(args.symbols_seed)]
+        
+        print("Run 1...")
+        r1 = subprocess.run(base_cmd, capture_output=True, text=True)
+        
+        if r1.returncode != 0:
+            print(f"Run 1 failed with exit code {r1.returncode}")
+            print(r1.stderr[-500:] if r1.stderr else "No stderr")
+            return False
+        
+        if not os.path.exists('outputs/trades.csv') or not os.path.exists('outputs/metrics.json'):
+            print("Run 1 did not produce expected output files (trades.csv, metrics.json)")
+            print("This may indicate no patterns were found. Parity check requires patterns.")
+            return False
+        
+        with open('outputs/trades.csv', 'r') as f:
+            trades1 = f.read()
+        with open('outputs/metrics.json', 'r') as f:
+            metrics1 = json.load(f)
+        
+        print("Run 2...")
+        r2 = subprocess.run(base_cmd, capture_output=True, text=True)
+        
+        if r2.returncode != 0:
+            print(f"Run 2 failed with exit code {r2.returncode}")
+            print(r2.stderr[-500:] if r2.stderr else "No stderr")
+            return False
+        
+        if not os.path.exists('outputs/trades.csv') or not os.path.exists('outputs/metrics.json'):
+            print("Run 2 did not produce expected output files")
+            return False
+        
+        with open('outputs/trades.csv', 'r') as f:
+            trades2 = f.read()
+        with open('outputs/metrics.json', 'r') as f:
+            metrics2 = json.load(f)
+        
+        trades_match = trades1 == trades2
+        
+        try:
+            equity1 = metrics1.get('ALL', {}).get('end_equity', 0)
+            equity2 = metrics2.get('ALL', {}).get('end_equity', 0)
+            equity_diff = abs(equity1 - equity2) if equity1 and equity2 else 0
+            equity_match = equity_diff < 0.01
+        except:
+            equity_match = False
+            equity_diff = float('inf')
+        
+        try:
+            dd1 = metrics1.get('ALL', {}).get('max_dd_pct', 0)
+            dd2 = metrics2.get('ALL', {}).get('max_dd_pct', 0)
+            dd_diff = abs((dd1 or 0) - (dd2 or 0))
+            dd_match = dd_diff < 0.01
+        except:
+            dd_match = False
+            dd_diff = float('inf')
+        
+        print("\n" + "="*60)
+        print("PARITY CHECK RESULTS")
+        print("="*60)
+        print(f"Trades match: {'PASS' if trades_match else 'FAIL'}")
+        print(f"End equity match: {'PASS' if equity_match else 'FAIL'} (diff: ${equity_diff:.2f})")
+        print(f"Max DD match: {'PASS' if dd_match else 'FAIL'} (diff: {dd_diff:.2f}%)")
+        
+        if trades_match and equity_match and dd_match:
+            print("\nOVERALL: PASS - Results are reproducible!")
+        else:
+            print("\nOVERALL: FAIL - Results differ between runs!")
+            
+            diff_path = 'outputs/parity_diff.txt'
+            with open(diff_path, 'w') as f:
+                f.write("PARITY CHECK DIFF REPORT\n")
+                f.write("=" * 60 + "\n")
+                f.write(f"Trades match: {trades_match}\n")
+                f.write(f"Equity diff: ${equity_diff:.2f}\n")
+                f.write(f"DD diff: {dd_diff:.2f}%\n")
+                f.write("\nMetrics 1:\n")
+                json.dump(metrics1, f, indent=2, default=str)
+                f.write("\n\nMetrics 2:\n")
+                json.dump(metrics2, f, indent=2, default=str)
+            print(f"Diff saved to: {diff_path}")
+        
+        print("="*60 + "\n")
+        return trades_match and equity_match and dd_match
     
     if args.backtest:
         print("\n" + "="*60)
@@ -809,6 +944,55 @@ def main():
         print("  - outputs/trades.csv")
         print("  - outputs/equity.csv")
         print("  - outputs/metrics.json")
+        
+        cache_stats = get_cache_stats('data/price_cache')
+        
+        backtest_config_dict = {
+            'detection': {
+                'price_tolerance': args.price_tolerance,
+                'min_peak_height': args.min_peak_height,
+                'min_separation': args.min_separation,
+                'max_separation': args.max_separation,
+                'lookback_days': args.lookback_days,
+            },
+            'portfolio': {
+                'initial_capital': args.initial_capital,
+                'risk_confirmed': args.risk_confirmed,
+                'risk_forming': args.risk_forming,
+                'max_positions_total': args.max_positions_total,
+                'max_positions_forming': args.max_positions_forming,
+            },
+            'regime': {
+                'enabled': args.use_regime_filter.lower() == 'true',
+                'soft_gate': args.regime_soft_gate.lower() == 'true',
+            }
+        }
+        
+        manifest = create_manifest(
+            run_id=run_id,
+            mode='backtest',
+            command_line=' '.join(['python', 'main.py'] + sys.argv[1:]),
+            symbols_used=symbols,
+            symbols_requested=symbols_requested,
+            config=backtest_config_dict,
+            cache_stats=cache_stats,
+            date_range=None,
+            universe_type=universe_name,
+            liquidity_config=liquidity_config,
+            extra_info={
+                'symbols_seed': args.symbols_seed,
+                'metrics': {
+                    'total_return': split_metrics.get('ALL', {}).get('total_return_pct', 0),
+                    'max_dd': split_metrics.get('ALL', {}).get('max_dd_pct', 0),
+                    'trades': split_metrics.get('ALL', {}).get('trade_count', 0),
+                }
+            }
+        )
+        
+        manifest_path, symbols_path = save_manifest(manifest, symbols)
+        print(f"  - {manifest_path}")
+        print(f"  - {symbols_path}")
+        print(f"\nRun ID: {run_id}")
         print("="*60 + "\n")
         
         return trades_df, equity_df, split_metrics

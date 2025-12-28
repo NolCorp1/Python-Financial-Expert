@@ -1,0 +1,10 @@
+# Symbols for run: 20251228_235717_a1dc458d
+# Generated: 2025-12-28T23:57:19.057230
+# Mode: backtest
+# Count: 5
+
+AAPL
+AMD
+CSCO
+GOOGL
+PYPL

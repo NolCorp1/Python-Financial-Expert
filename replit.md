@@ -54,6 +54,54 @@ The `strategy_best_config.json` includes:
 - **regime**: mode, MA periods, risk multipliers
 - **liquidity**: min price, min dollar volume
 
+## Reproducibility & Audit Logs
+
+Every run (optimize, validate, backtest) generates a manifest for full provenance tracking.
+
+### Run Manifests
+Location: `outputs/manifests/<run_id>_manifest.json` + `<run_id>_symbols.txt`
+
+Each manifest includes:
+- run_id (timestamp + hash)
+- command line used
+- mode: optimize / validate / backtest
+- universe type, symbols used, liquidity filters
+- git commit hash
+- package versions (python, pandas, yfinance, pyarrow)
+- strategy config applied
+- cache stats (hits/misses)
+
+### Deterministic Runs
+Use `--symbols-seed` for reproducible symbol selection:
+```bash
+python optimize.py --universe nasdaq --max-stocks 100 --symbols-seed 123
+python main.py --universe nasdaq --max-stocks 100 --symbols-seed 123 --backtest-v2
+```
+Same seed + same command = identical results.
+
+### Parity Check
+Verify that a config produces identical results across runs:
+```bash
+python main.py --config outputs/strategy_best_config.json \
+  --universe nasdaq --max-stocks 50 --symbols-seed 123 --parity-check
+```
+Compares trades, end equity, and max drawdown between two runs.
+
+### Comparing Runs (Diff)
+Use manifest.py to compare two runs:
+```bash
+python manifest.py --diff outputs/manifests/run1_manifest.json outputs/manifests/run2_manifest.json
+```
+Outputs: `outputs/diff_<run1>_<run2>.txt` showing config/symbol/metric differences.
+
+### Price Cache Integrity
+Generate integrity report:
+```python
+from price_cache import generate_cache_report
+report = generate_cache_report(symbols, auto_repair=True)
+```
+Report saved to: `outputs/price_cache_report.csv`
+
 ## Overview
 A comprehensive Python program that scans for double bottom ("W") chart patterns in NASDAQ-listed stocks using historical price data from yfinance. The scanner uses algorithmic pattern detection with scipy, RSI divergence confirmation, and volume analysis. Includes a full backtesting engine to evaluate strategy performance.
 

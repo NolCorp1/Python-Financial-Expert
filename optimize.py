@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from itertools import product
 from typing import Dict, List, Tuple, Any, Optional
@@ -1508,6 +1509,11 @@ def main():
     parser.add_argument('--validate-stocks', type=int, default=300,
                        help='Number of stocks for validation (default 300)')
     
+    parser.add_argument('--symbols-seed', type=int, default=None,
+                       help='Random seed for deterministic symbol subset selection')
+    parser.add_argument('--grid-seed', type=int, default=42,
+                       help='Random seed for parameter grid sampling')
+    
     args = parser.parse_args()
     
     if args.refresh_symbol_cache:
@@ -1520,14 +1526,39 @@ def main():
         run_validation(args)
         return
     
+    import random as _random
+    from manifest import generate_run_id, create_manifest, save_manifest, get_version_info
+    from price_cache import get_cache_stats
+    
+    symbols_requested = args.max_stocks or 0
+    
     if args.universe == 'nasdaq':
-        symbols = get_nasdaq_symbols_cached(limit=args.max_stocks)
+        all_symbols = get_nasdaq_symbols_cached(limit=None)
+        all_symbols = sorted(all_symbols)
+        
+        if args.max_stocks and args.max_stocks < len(all_symbols):
+            if args.symbols_seed is not None:
+                _random.seed(args.symbols_seed)
+                symbols = sorted(_random.sample(all_symbols, args.max_stocks))
+            else:
+                symbols = all_symbols[:args.max_stocks]
+        else:
+            symbols = all_symbols
+        symbols_requested = args.max_stocks or len(all_symbols)
     elif args.universe == 'demo':
-        symbols = get_demo_symbols()
+        symbols = sorted(get_demo_symbols())
         if args.max_stocks:
-            symbols = symbols[:args.max_stocks]
+            if args.symbols_seed is not None:
+                _random.seed(args.symbols_seed)
+                symbols = sorted(_random.sample(symbols, min(args.max_stocks, len(symbols))))
+            else:
+                symbols = symbols[:args.max_stocks]
+        symbols_requested = args.max_stocks or len(symbols)
     else:
-        symbols = args.symbols
+        symbols = sorted(args.symbols)
+        symbols_requested = len(symbols)
+    
+    run_id = generate_run_id()
     
     liquidity_config = {
         'min_price': args.min_price,
@@ -1575,8 +1606,37 @@ def main():
         f.write(summary_text)
     print(f"Summary saved to: outputs/walkforward_summary.txt")
     
+    cache_stats = get_cache_stats(args.price_cache_dir)
+    
+    manifest = create_manifest(
+        run_id=run_id,
+        mode='optimize',
+        command_line=' '.join(['python', 'optimize.py'] + sys.argv[1:]),
+        symbols_used=symbols,
+        symbols_requested=symbols_requested,
+        config=strategy_config,
+        cache_stats=cache_stats,
+        date_range=None,
+        universe_type=args.universe,
+        liquidity_config=liquidity_config,
+        extra_info={
+            'symbols_seed': args.symbols_seed,
+            'grid_seed': args.grid_seed,
+            'train_bars': args.train_bars,
+            'test_bars': args.test_bars,
+            'step_bars': args.step_bars,
+            'objective': args.objective,
+            'robustness_stats': robustness_stats,
+        }
+    )
+    
+    manifest_path, symbols_path = save_manifest(manifest, symbols)
+    print(f"Run manifest saved to: {manifest_path}")
+    print(f"Symbols list saved to: {symbols_path}")
+    
     print("\n" + "=" * 60)
     print("OPTIMIZATION COMPLETE!")
+    print(f"Run ID: {run_id}")
     print("=" * 60)
 
 
