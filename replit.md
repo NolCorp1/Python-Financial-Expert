@@ -131,16 +131,18 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
-- 2025-12-28: Market Regime Filter (Task 11)
-  - Added BacktestConfig fields: use_regime_filter, regime_symbol, regime_trend_fast_ma, regime_trend_slow_ma, regime_vol_lookback, regime_vol_high_threshold, regime_disable_forming_in_downtrend, regime_disable_forming_in_high_vol, regime_reduce_risk_in_high_vol, regime_high_vol_risk_multiplier
+- 2025-12-28: Market Regime Filter with Soft Gating (Task 11)
+  - Added BacktestConfig fields: use_regime_filter, regime_symbol, regime_trend_fast_ma, regime_trend_slow_ma, regime_vol_lookback, regime_vol_high_threshold, regime_soft_gate, regime_downtrend_forming_risk_mult, regime_highvol_forming_risk_mult, regime_highvol_confirmed_risk_mult
   - compute_regime() helper: MA-based trend (50/200) + ATR% volatility detection
   - 1-bar shift for no-lookahead guarantee
-  - Entry gating: skip FORMING signals in downtrend or high-vol
-  - Dynamic risk: 70% risk multiplier in high volatility
+  - Soft gating (default): apply risk multipliers instead of hard skip
+    - FORMING in downtrend: 0.85x risk
+    - FORMING in high-vol: 0.70x risk
+    - CONFIRMED in high-vol: 0.85x risk
+  - Hard skip mode available (--regime-soft-gate false)
   - Regime symbol (QQQ/SPY) excluded from pattern detection/trading
-  - Skip counters: skipped_regime_forming_downtrend, skipped_regime_forming_highvol
-  - CLI: --use-regime-filter, --regime-symbol, --regime-fast-ma, --regime-slow-ma, --regime-vol-lookback, --regime-vol-high-threshold, --regime-disable-forming-in-downtrend, --regime-disable-forming-in-high-vol, --regime-reduce-risk-in-high-vol, --regime-high-vol-risk-multiplier
-  - Results: Max DD improved from -5.73% to -5.22% with regime filter enabled
+  - CLI: --use-regime-filter, --regime-symbol, --regime-fast-ma, --regime-slow-ma, --regime-vol-lookback, --regime-vol-high-threshold, --regime-soft-gate, --regime-downtrend-forming-mult, --regime-highvol-forming-mult, --regime-highvol-confirmed-mult
+  - Results (demo 30 stocks): OFF -5.73% DD, Hard Skip -5.24% DD, Soft Gate -5.15% DD (best)
 - 2025-12-28: Correlation & Cluster Caps (Task 10)
   - Added BacktestConfig fields: use_correlation_caps, corr_lookback_days, max_corr_to_existing, use_cluster_caps, n_clusters, max_positions_per_cluster
   - Hierarchical clustering (scipy) for symbol grouping
