@@ -1,0 +1,72 @@
+Task 12B — Walk-Forward Performance Fix (Single Download + Slice; No Redownload Per Window)
+=========================================================================================
+Objective
+---------
+Make walk-forward optimization fast enough to run on 200–800 symbols by eliminating
+redundant downloads and heavy recomputation.
+
+Right now your runtime blows up because:
+- each window and/or param combo triggers downloads and repeated preprocessing
+We will:
+1) Download price data ONCE per symbol for the full date range needed
+2) Reuse it across all windows by slicing
+3) Cache data on disk (parquet) so repeated optimize runs are cheap
+4) Use yfinance batching to reduce request overhead
+
+Files to Edit
+-------------
+- optimize.py
+- (optional) double_bottom_scanner.py (if it re-downloads internally)
+
+Key Changes
+-----------
+1) Build a global date range for the entire walk-forward run:
+   - Determine earliest needed date:
+       earliest = (start_of_first_train_window - buffer)  (buffer 30 bars)
+   - Determine latest needed date:
+       latest = end_of_last_test_window
+
+2) Download ALL symbols once:
+   - Use yfinance.download(tickers="AAPL MSFT ...", group_by="ticker", auto_adjust=False, threads=True)
+   - Chunk tickers into batches of 50–100 to avoid yfinance instability
+   - Convert into dict[symbol] -> df
+
+3) Disk cache:
+   - Save each symbol df to: data/price_cache/{symbol}.parquet
+   - When optimize.py runs:
+       if parquet exists and covers needed date range -> load from disk
+       else download missing symbols only
+
+4) Modify scan pipeline usage:
+   - Ensure scanner/detector accepts preloaded df to avoid internal download
+   - In optimize.py, for each window:
+       price_slice = {sym: df.loc[start:end]}  (no network)
+       run detection + signals + backtest on sliced data
+
+5) Precompute indicators once (optional optimization):
+   - ATR for each symbol can be computed once on full df, then sliced
+   - RSI or others likewise
+   (Big speed win if you add more indicators later)
+
+6) Add runtime knobs:
+   - --download-batch-size 75
+   - --price-cache-dir data/price_cache
+   - --disable-price-cache (debug)
+
+Acceptance Criteria
+-------------------
+A) optimize.py does not call yfinance per window (only once upfront)
+B) 200 symbols * 250 combos completes without 10-min timeouts on typical runs
+C) Re-running optimize is much faster due to parquet cache
+D) Results are identical to the non-cached approach (except faster)
+
+Manual Test Plan
+----------------
+1) First run (fills cache):
+   python optimize.py --universe nasdaq --max-stocks 200 --grid-size-limit 80
+
+2) Second run (should be much faster):
+   python optimize.py --universe nasdaq --max-stocks 200 --grid-size-limit 80
+
+3) Increase:
+   python optimize.py --universe nasdaq --max-stocks 500 --grid-size-limit 120

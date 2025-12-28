@@ -1,0 +1,103 @@
+Task 12A — Universe Download Hardening (Prevent Corrupted NASDAQ Cache)
+==============================================================================
+Objective
+---------
+Make NASDAQ universe fetching rock-solid:
+- Never overwrite a good cache with bad/HTML content
+- Validate the downloaded file is a real CSV with expected columns
+- Use atomic writes (temp file -> rename) to avoid partial cache writes
+- Keep a stable fallback universe that is > 500 symbols (liquid common stocks)
+- Add a "cache quarantine" mechanism to preserve last-known-good cache
+
+Files to Edit
+-------------
+- universe.py
+
+Key Problems Observed
+---------------------
+- NASDAQ screener sometimes returns HTML or an error payload
+- Your code writes that response into data/nasdaq_symbols_cache.csv (corrupts cache)
+- Fallback list is too small (~90), limiting sample size
+
+Implementation Requirements
+---------------------------
+1) Download validation BEFORE writing cache
+2) Atomic cache update (write temp -> validate -> replace)
+3) Preserve last-known-good cache (backup)
+4) Expand fallback to a large liquid universe using yfinance metadata or cached symbols
+   (without relying on NASDAQ screener being available)
+
+Step-by-Step Changes
+--------------------
+1) Add a function validate_nasdaq_csv_bytes(content: bytes) -> tuple[bool, str]
+   Checks:
+   - content size > 10KB
+   - first 1KB does NOT contain "<html" or "<!DOCTYPE"
+   - parse via pandas.read_csv(io.BytesIO(content))
+   - required columns include "Symbol" (case-insensitive)
+   - number of rows >= 500 (or >= 200 if you want looser)
+   Return (ok, reason)
+
+2) Update get_nasdaq_symbols_cached():
+   - If cache exists and is valid -> use it
+   - Else attempt download:
+       a) requests.get(url, timeout=30, headers={"User-Agent": "...", "Accept": "text/csv,*/*"})
+       b) validate content with validate_nasdaq_csv_bytes
+       c) if valid:
+            write to temp: cache_path + ".tmp"
+            re-read temp file to confirm parse works
+            rotate old cache to ".bak" (if exists)
+            atomic rename temp -> cache
+         else:
+            do NOT overwrite cache
+            log warning reason
+
+3) Add validate_existing_cache(cache_path) -> bool
+   - Attempt read + required columns + row count sanity
+   - If invalid:
+       move to cache_path + ".corrupt.<timestamp>"
+       proceed to download or fallback
+
+4) Expand fallback universe (critical)
+   Add a function get_fallback_liquid_universe(min_count=600) -> list[str]
+   Suggested approach (robust + free):
+   - If you already have ANY historical cache(s) in outputs/ or prior runs (liquidity report),
+     parse symbols from those.
+   - Maintain a bundled static list file (e.g. data/fallback_liquid_nasdaq.txt) with 800–1500
+     known liquid NASDAQ tickers that you curate once and commit.
+   - If file missing, ship an embedded list inside universe.py of ~800 symbols.
+
+   This ensures:
+   - Even if NASDAQ screener is down, you can still run 200–800 stock experiments.
+
+5) Add CLI flag for cache reset:
+   In main.py and optimize.py support:
+   --refresh-symbol-cache
+   which forces a download attempt but still won’t overwrite cache if invalid.
+
+Acceptance Criteria
+-------------------
+A) Cache is never overwritten by HTML/error responses
+B) If download fails, last-known-good cache is used
+C) Fallback universe contains >= 600 symbols
+D) You can run:
+   python main.py --universe nasdaq --max-stocks 500
+   even if screener download fails
+
+Manual Test Plan
+----------------
+1) Simulate corrupt cache:
+   - write "<html>bad</html>" into cache
+   - run get_nasdaq_symbols_cached()
+   - ensure cache is quarantined and fallback used
+
+2) Force refresh:
+   python main.py --universe nasdaq --refresh-symbol-cache --max-stocks 200
+
+3) Confirm row count in cache >= 500
+
+
+Notes
+-----
+Do NOT reduce universe size due to fetch issues. Fix ingestion so optimization results
+aren’t based on tiny samples.
