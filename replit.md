@@ -131,6 +131,16 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-28: Walk-Forward v3 - Regime Optimization (Task 12)
+  - Updated run_backtest to return diagnostics dict (skip counters, regime days, effective risk)
+  - Added regime_mode (OFF/HARD_SKIP/SOFT_GATE) to parameter grid in build_param_grid()
+  - Expanded grid: regime MA periods, vol thresholds, soft gate multipliers
+  - params_to_backtest_config() handles regime params: mode detection, config updates
+  - run_scan_and_backtest() optionally returns diagnostics (return_diagnostics flag)
+  - run_window_optimization() collects test diagnostics for regime attribution
+  - New CSV columns: test_regime_mode, test_downtrend_days, test_highvol_days, test_regime_hard_skipped, test_forming_reduced_*, test_avg_risk_*
+  - compute_regime_mode_stats() / format_regime_stats() for summary output
+  - Summary includes: regime mode distribution, mean scores by mode, total reduced/skipped counts
 - 2025-12-28: Market Regime Filter with Soft Gating (Task 11)
   - Added BacktestConfig fields: use_regime_filter, regime_symbol, regime_trend_fast_ma, regime_trend_slow_ma, regime_vol_lookback, regime_vol_high_threshold, regime_soft_gate, regime_downtrend_forming_risk_mult, regime_highvol_forming_risk_mult, regime_highvol_confirmed_risk_mult
   - compute_regime() helper: MA-based trend (50/200) + ATR% volatility detection

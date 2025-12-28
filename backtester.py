@@ -285,7 +285,8 @@ def compute_symbol_correlation_and_clusters(
 def run_backtest(
     signals_by_symbol: Dict[str, List[TradeSignal]],
     price_data_by_symbol: Dict[str, pd.DataFrame],
-    cfg: BacktestConfig
+    cfg: BacktestConfig,
+    return_diagnostics: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run no-lookahead backtest simulation with portfolio rules engine.
@@ -294,10 +295,12 @@ def run_backtest(
         signals_by_symbol: Dict mapping symbol to list of TradeSignals
         price_data_by_symbol: Dict mapping symbol to OHLCV DataFrame
         cfg: BacktestConfig with simulation parameters
+        return_diagnostics: If True, return (trades_df, equity_df, diagnostics)
         
     Returns:
         trades_df: Trade blotter with all completed trades
         equity_df: Daily equity curve with drawdown
+        diagnostics: (optional) Dict with skip counters, regime stats, effective risk
     """
     cash = cfg.initial_capital
     open_positions: Dict[str, OpenPosition] = {}
@@ -317,6 +320,13 @@ def run_backtest(
     reduced_regime_forming_highvol = 0
     reduced_regime_confirmed_highvol = 0
     skipped_regime_hard = 0
+    
+    regime_downtrend_days = 0
+    regime_highvol_days = 0
+    total_risk_forming = 0.0
+    total_risk_confirmed = 0.0
+    count_forming = 0
+    count_confirmed = 0
     
     corr_matrix = pd.DataFrame()
     clusters: Dict[str, int] = {}
@@ -696,6 +706,13 @@ def run_backtest(
             )
             open_positions[sym] = position
             
+            if signal.entry_kind == "FORMING":
+                total_risk_forming += risk_fraction
+                count_forming += 1
+            else:
+                total_risk_confirmed += risk_fraction
+                count_confirmed += 1
+            
             signal_idx += 1
         
         open_value = sum(
@@ -774,6 +791,32 @@ def run_backtest(
     equity_df = pd.DataFrame(equity_history)
     if not equity_df.empty:
         equity_df = equity_df.sort_values('date').reset_index(drop=True)
+    
+    if return_diagnostics:
+        if len(regime_df) > 0:
+            regime_downtrend_days = int((regime_df['trend_signal'] == 'DOWN').sum())
+            regime_highvol_days = int((regime_df['vol_signal'] == 'HIGH').sum())
+        
+        diagnostics = {
+            'skipped_max_total': skipped_max_total,
+            'skipped_max_forming': skipped_max_forming,
+            'skipped_max_confirmed': skipped_max_confirmed,
+            'skipped_symbol_already_open': skipped_symbol_already_open,
+            'skipped_invalid_sizing': skipped_invalid_sizing,
+            'skipped_corr_cap': skipped_corr_cap,
+            'skipped_cluster_cap': skipped_cluster_cap,
+            'skipped_regime_hard': skipped_regime_hard,
+            'reduced_regime_forming_downtrend': reduced_regime_forming_downtrend,
+            'reduced_regime_forming_highvol': reduced_regime_forming_highvol,
+            'reduced_regime_confirmed_highvol': reduced_regime_confirmed_highvol,
+            'regime_downtrend_days': regime_downtrend_days,
+            'regime_highvol_days': regime_highvol_days,
+            'avg_effective_risk_forming': total_risk_forming / count_forming if count_forming > 0 else 0.0,
+            'avg_effective_risk_confirmed': total_risk_confirmed / count_confirmed if count_confirmed > 0 else 0.0,
+            'count_forming': count_forming,
+            'count_confirmed': count_confirmed,
+        }
+        return trades_df, equity_df, diagnostics
     
     return trades_df, equity_df
 

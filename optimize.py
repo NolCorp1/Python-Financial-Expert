@@ -111,12 +111,13 @@ def slice_price_data(
 
 def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[str, Any]]:
     """
-    Build parameter grid for optimization including portfolio/exit knobs.
+    Build parameter grid for optimization including portfolio/exit knobs and regime.
     
     Includes:
     - Detection params (reduced to avoid explosion)
     - Portfolio/risk rules (Task 7)
     - Exit management rules (Task 8)
+    - Regime parameters (Task 12)
     
     Returns:
         List of parameter dictionaries (randomly sampled if exceeds limit)
@@ -175,7 +176,56 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
         params['forming_no_progress_action'] = 'EXIT'
         grid.append(params)
     
-    return grid
+    grid_with_regime = []
+    regime_modes = ['OFF', 'HARD_SKIP', 'SOFT_GATE']
+    
+    regime_params_when_on = {
+        'regime_trend_fast_ma': [20, 50],
+        'regime_trend_slow_ma': [150, 200],
+        'regime_vol_lookback': [14, 20],
+        'regime_vol_high_threshold': [0.025, 0.030, 0.035],
+    }
+    
+    soft_gate_multipliers = {
+        'regime_downtrend_forming_mult': [0.80, 0.85, 1.00],
+        'regime_highvol_forming_mult': [0.70, 0.85, 1.00],
+        'regime_highvol_confirmed_mult': [0.80, 0.90, 1.00],
+    }
+    
+    regime_on_keys = list(regime_params_when_on.keys())
+    regime_on_values = [regime_params_when_on[k] for k in regime_on_keys]
+    regime_on_combos = list(product(*regime_on_values))
+    
+    soft_gate_keys = list(soft_gate_multipliers.keys())
+    soft_gate_values = [soft_gate_multipliers[k] for k in soft_gate_keys]
+    soft_gate_combos = list(product(*soft_gate_values))
+    
+    for base_params in grid:
+        for mode in regime_modes:
+            if mode == 'OFF':
+                new_params = base_params.copy()
+                new_params['regime_mode'] = 'OFF'
+                grid_with_regime.append(new_params)
+            elif mode == 'HARD_SKIP':
+                for regime_combo in regime_on_combos:
+                    new_params = base_params.copy()
+                    new_params['regime_mode'] = 'HARD_SKIP'
+                    new_params.update(dict(zip(regime_on_keys, regime_combo)))
+                    grid_with_regime.append(new_params)
+            else:
+                for regime_combo in regime_on_combos:
+                    for soft_combo in soft_gate_combos:
+                        new_params = base_params.copy()
+                        new_params['regime_mode'] = 'SOFT_GATE'
+                        new_params.update(dict(zip(regime_on_keys, regime_combo)))
+                        new_params.update(dict(zip(soft_gate_keys, soft_combo)))
+                        grid_with_regime.append(new_params)
+    
+    if len(grid_with_regime) > grid_size_limit:
+        random.seed(seed)
+        grid_with_regime = random.sample(grid_with_regime, grid_size_limit)
+    
+    return grid_with_regime
 
 
 def params_to_config(params: Dict[str, Any], base_config: Dict = None) -> Dict:
@@ -245,6 +295,39 @@ def params_to_backtest_config(params: Dict[str, Any], base_cfg: BacktestConfig) 
     if 'confirmed_trailing_atr_mult' in params:
         updates['confirmed_trailing_atr_mult'] = params['confirmed_trailing_atr_mult']
     
+    regime_mode = params.get('regime_mode', 'SOFT_GATE')
+    
+    if regime_mode == 'OFF':
+        updates['use_regime_filter'] = False
+    elif regime_mode == 'HARD_SKIP':
+        updates['use_regime_filter'] = True
+        updates['regime_soft_gate'] = False
+        if 'regime_trend_fast_ma' in params:
+            updates['regime_trend_fast_ma'] = params['regime_trend_fast_ma']
+        if 'regime_trend_slow_ma' in params:
+            updates['regime_trend_slow_ma'] = params['regime_trend_slow_ma']
+        if 'regime_vol_lookback' in params:
+            updates['regime_vol_lookback'] = params['regime_vol_lookback']
+        if 'regime_vol_high_threshold' in params:
+            updates['regime_vol_high_threshold'] = params['regime_vol_high_threshold']
+    elif regime_mode == 'SOFT_GATE':
+        updates['use_regime_filter'] = True
+        updates['regime_soft_gate'] = True
+        if 'regime_trend_fast_ma' in params:
+            updates['regime_trend_fast_ma'] = params['regime_trend_fast_ma']
+        if 'regime_trend_slow_ma' in params:
+            updates['regime_trend_slow_ma'] = params['regime_trend_slow_ma']
+        if 'regime_vol_lookback' in params:
+            updates['regime_vol_lookback'] = params['regime_vol_lookback']
+        if 'regime_vol_high_threshold' in params:
+            updates['regime_vol_high_threshold'] = params['regime_vol_high_threshold']
+        if 'regime_downtrend_forming_mult' in params:
+            updates['regime_downtrend_forming_risk_mult'] = params['regime_downtrend_forming_mult']
+        if 'regime_highvol_forming_mult' in params:
+            updates['regime_highvol_forming_risk_mult'] = params['regime_highvol_forming_mult']
+        if 'regime_highvol_confirmed_mult' in params:
+            updates['regime_highvol_confirmed_risk_mult'] = params['regime_highvol_confirmed_mult']
+    
     if updates:
         return replace(base_cfg, **updates)
     return base_cfg
@@ -253,7 +336,8 @@ def params_to_backtest_config(params: Dict[str, Any], base_cfg: BacktestConfig) 
 def run_scan_and_backtest(
     price_data: Dict[str, pd.DataFrame],
     params: Dict[str, Any],
-    backtest_cfg: BacktestConfig
+    backtest_cfg: BacktestConfig,
+    return_diagnostics: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run pattern detection, signal generation, and backtest for given params.
@@ -262,18 +346,26 @@ def run_scan_and_backtest(
         price_data: Dict of symbol -> OHLCV DataFrame
         params: Optimization parameters (detection + portfolio/exit)
         backtest_cfg: Base backtest configuration
+        return_diagnostics: If True, return (trades_df, equity_df, diagnostics)
         
     Returns:
-        Tuple of (trades_df, equity_df)
+        Tuple of (trades_df, equity_df) or (trades_df, equity_df, diagnostics)
     """
     config = params_to_config(params)
     
     cfg = params_to_backtest_config(params, backtest_cfg)
     
+    regime_symbol = cfg.regime_symbol
+    if cfg.use_regime_filter and regime_symbol not in price_data:
+        pass
+    
     all_signals = []
     
     for symbol, df in price_data.items():
         if len(df) < 50:
+            continue
+        
+        if cfg.use_regime_filter and symbol == cfg.regime_symbol:
             continue
         
         patterns = detect_double_bottom(df, config)
@@ -286,13 +378,17 @@ def run_scan_and_backtest(
             all_signals.extend(signals)
     
     if not all_signals:
+        if return_diagnostics:
+            return pd.DataFrame(), pd.DataFrame(), {}
         return pd.DataFrame(), pd.DataFrame()
     
     signals_by_symbol = group_signals_by_symbol(all_signals)
     
-    trades_df, equity_df = run_backtest(signals_by_symbol, price_data, cfg)
+    result = run_backtest(signals_by_symbol, price_data, cfg, return_diagnostics=return_diagnostics)
     
-    return trades_df, equity_df
+    if return_diagnostics:
+        return result
+    return result
 
 
 def compute_exposure_days(trades_df: pd.DataFrame) -> int:
@@ -531,7 +627,12 @@ def run_window_optimization(
     train_tr = compute_trade_metrics(best_train_trades_df) if not best_train_trades_df.empty else {}
     train_eq = compute_equity_metrics(best_train_equity_df) if not best_train_equity_df.empty else {}
     
-    test_trades, test_equity = run_scan_and_backtest(test_data, best_params, backtest_cfg)
+    test_result = run_scan_and_backtest(test_data, best_params, backtest_cfg, return_diagnostics=True)
+    if len(test_result) == 3:
+        test_trades, test_equity, test_diag = test_result
+    else:
+        test_trades, test_equity = test_result
+        test_diag = {}
     
     test_score, test_quality = score_oos(
         test_trades, test_equity,
@@ -547,7 +648,9 @@ def run_window_optimization(
     split = compute_split_metrics(test_trades, test_equity) if not test_trades.empty else {}
     test_exposure_days = compute_exposure_days(test_trades)
     
-    return {
+    regime_mode = best_params.get('regime_mode', 'SOFT_GATE')
+    
+    result = {
         'train_start': train_start,
         'train_end': train_end,
         'test_start': test_start,
@@ -569,7 +672,18 @@ def run_window_optimization(
         'test_profit_factor': tr.get('profit_factor', np.nan),
         'test_forming_expectancy_r': split.get('FORMING', {}).get('expectancy_r', np.nan),
         'test_confirmed_expectancy_r': split.get('CONFIRMED', {}).get('expectancy_r', np.nan),
+        'test_regime_mode': regime_mode,
+        'test_downtrend_days': test_diag.get('regime_downtrend_days', 0),
+        'test_highvol_days': test_diag.get('regime_highvol_days', 0),
+        'test_regime_hard_skipped': test_diag.get('skipped_regime_hard', 0),
+        'test_forming_reduced_downtrend': test_diag.get('reduced_regime_forming_downtrend', 0),
+        'test_forming_reduced_highvol': test_diag.get('reduced_regime_forming_highvol', 0),
+        'test_confirmed_reduced_highvol': test_diag.get('reduced_regime_confirmed_highvol', 0),
+        'test_avg_risk_forming': test_diag.get('avg_effective_risk_forming', 0.0),
+        'test_avg_risk_confirmed': test_diag.get('avg_effective_risk_confirmed', 0.0),
     }
+    
+    return result
 
 
 def compute_stability_summary(window_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
@@ -709,6 +823,98 @@ def find_overall_best_params(window_results: List[Dict[str, Any]]) -> Tuple[Dict
     return json.loads(best_key), best_mean
 
 
+def compute_regime_mode_stats(window_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Compute aggregate statistics for regime mode across windows.
+    
+    Args:
+        window_results: List of window result dicts
+        
+    Returns:
+        Dict with regime stats
+    """
+    mode_counts = defaultdict(int)
+    mode_scores = defaultdict(list)
+    total_downtrend_days = 0
+    total_highvol_days = 0
+    total_hard_skipped = 0
+    total_forming_reduced_downtrend = 0
+    total_forming_reduced_highvol = 0
+    total_confirmed_reduced_highvol = 0
+    avg_risk_forming_list = []
+    avg_risk_confirmed_list = []
+    
+    for r in window_results:
+        mode = r.get('test_regime_mode', 'OFF')
+        mode_counts[mode] += 1
+        
+        test_score = r.get('test_score', float('-inf'))
+        if test_score != float('-inf'):
+            mode_scores[mode].append(test_score)
+        
+        total_downtrend_days += r.get('test_downtrend_days', 0)
+        total_highvol_days += r.get('test_highvol_days', 0)
+        total_hard_skipped += r.get('test_regime_hard_skipped', 0)
+        total_forming_reduced_downtrend += r.get('test_forming_reduced_downtrend', 0)
+        total_forming_reduced_highvol += r.get('test_forming_reduced_highvol', 0)
+        total_confirmed_reduced_highvol += r.get('test_confirmed_reduced_highvol', 0)
+        
+        if r.get('test_avg_risk_forming', 0) > 0:
+            avg_risk_forming_list.append(r['test_avg_risk_forming'])
+        if r.get('test_avg_risk_confirmed', 0) > 0:
+            avg_risk_confirmed_list.append(r['test_avg_risk_confirmed'])
+    
+    mode_mean_scores = {}
+    for mode, scores in mode_scores.items():
+        mode_mean_scores[mode] = np.mean(scores) if scores else float('nan')
+    
+    return {
+        'mode_counts': dict(mode_counts),
+        'mode_mean_scores': mode_mean_scores,
+        'total_downtrend_days': total_downtrend_days,
+        'total_highvol_days': total_highvol_days,
+        'total_hard_skipped': total_hard_skipped,
+        'total_forming_reduced_downtrend': total_forming_reduced_downtrend,
+        'total_forming_reduced_highvol': total_forming_reduced_highvol,
+        'total_confirmed_reduced_highvol': total_confirmed_reduced_highvol,
+        'avg_risk_forming': np.mean(avg_risk_forming_list) if avg_risk_forming_list else 0.0,
+        'avg_risk_confirmed': np.mean(avg_risk_confirmed_list) if avg_risk_confirmed_list else 0.0,
+    }
+
+
+def format_regime_stats(stats: Dict[str, Any]) -> str:
+    """Format regime stats for summary output."""
+    lines = [
+        "REGIME FILTER STATISTICS",
+        "-" * 30,
+    ]
+    
+    mode_counts = stats.get('mode_counts', {})
+    mode_scores = stats.get('mode_mean_scores', {})
+    
+    for mode in ['OFF', 'HARD_SKIP', 'SOFT_GATE']:
+        count = mode_counts.get(mode, 0)
+        mean_score = mode_scores.get(mode, float('nan'))
+        if count > 0:
+            lines.append(f"  {mode}: {count} windows, mean score={mean_score:.2f}")
+    
+    total_reduced = (stats.get('total_forming_reduced_downtrend', 0) +
+                     stats.get('total_forming_reduced_highvol', 0) +
+                     stats.get('total_confirmed_reduced_highvol', 0))
+    
+    lines.append(f"  Hard skipped (HARD_SKIP mode): {stats.get('total_hard_skipped', 0)}")
+    lines.append(f"  Soft gated (reduced risk): {total_reduced}")
+    lines.append(f"  Downtrend days (total): {stats.get('total_downtrend_days', 0)}")
+    lines.append(f"  High-vol days (total): {stats.get('total_highvol_days', 0)}")
+    
+    avg_risk_f = stats.get('avg_risk_forming', 0)
+    avg_risk_c = stats.get('avg_risk_confirmed', 0)
+    if avg_risk_f > 0 or avg_risk_c > 0:
+        lines.append(f"  Avg effective risk: FORMING={avg_risk_f:.3f}, CONFIRMED={avg_risk_c:.3f}")
+    
+    return "\n".join(lines)
+
+
 def run_walkforward_optimization(
     symbols: List[str],
     train_bars: int = 504,
@@ -797,6 +1003,14 @@ def run_walkforward_optimization(
         print("ERROR: No valid price data downloaded")
         return pd.DataFrame(), {}, "No data available"
     
+    regime_symbols = ['QQQ', 'SPY']
+    for regime_sym in regime_symbols:
+        if regime_sym not in price_data:
+            df = download_stock_data(regime_sym, years=download_years)
+            if df is not None and len(df) > train_bars:
+                price_data[regime_sym] = df
+                print(f"Added regime symbol {regime_sym} for regime filter")
+    
     print("\nStep 2: Building walk-forward windows...")
     all_dates = [set(df.index) for df in price_data.values()]
     common_dates = set.intersection(*all_dates) if all_dates else set()
@@ -861,6 +1075,10 @@ def run_walkforward_optimization(
             'test_sharpe', 'test_trade_count', 'test_exposure_days', 
             'test_expectancy_r', 'test_win_rate', 'test_profit_factor', 
             'test_forming_expectancy_r', 'test_confirmed_expectancy_r',
+            'test_regime_mode', 'test_downtrend_days', 'test_highvol_days',
+            'test_regime_hard_skipped', 'test_forming_reduced_downtrend',
+            'test_forming_reduced_highvol', 'test_confirmed_reduced_highvol',
+            'test_avg_risk_forming', 'test_avg_risk_confirmed',
             'best_params_json']
     
     available_cols = [c for c in cols if c in results_df.columns]
@@ -876,6 +1094,9 @@ def run_walkforward_optimization(
     mean_test_score = np.mean(valid_test_scores) if valid_test_scores else float('nan')
     median_test_score = np.median(valid_test_scores) if valid_test_scores else float('nan')
     
+    regime_stats = compute_regime_mode_stats(window_results)
+    regime_stats_text = format_regime_stats(regime_stats)
+    
     summary_lines = [
         "WALK-FORWARD OPTIMIZATION SUMMARY",
         "=" * 40,
@@ -888,6 +1109,8 @@ def run_walkforward_optimization(
         "OVERALL BEST PARAMETERS (by mean OOS score):",
         json.dumps(best_params, indent=2),
         f"Mean OOS score: {best_mean_score:.2f}",
+        "",
+        regime_stats_text,
         "",
         stability_text
     ]
