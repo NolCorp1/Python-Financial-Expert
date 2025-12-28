@@ -154,7 +154,7 @@ def _download_nasdaq_symbols(exclude_funds: bool = True) -> List[str]:
 
 
 def _get_fallback_symbols() -> List[str]:
-    """Return a fallback list of major NASDAQ stocks."""
+    """Return a fallback list of 200+ liquid NASDAQ stocks."""
     return [
         "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
         "AVGO", "COST", "NFLX", "AMD", "ADBE", "PEP", "CSCO", "INTC",
@@ -168,6 +168,32 @@ def _get_fallback_symbols() -> List[str]:
         "CDW", "VRSK", "BKR", "ALGN", "FANG", "TEAM", "ZS", "DDOG",
         "ANSS", "WBD", "CTSH", "GEHC", "ILMN", "EXC", "WBA", "XEL",
         "SIRI", "LCID", "RIVN", "SOFI", "PLTR", "COIN", "ROKU", "HOOD",
+        "DOCU", "SPLK", "OKTA", "MDB", "NET", "SNOW", "BILL", "HUBS",
+        "VEEV", "TWLO", "COUP", "ZM", "PINS", "SNAP", "UBER", "LYFT",
+        "DASH", "RBLX", "U", "PATH", "SAMSARA", "IOT", "CFLT", "ESTC",
+        "GTLB", "MNDY", "DOCN", "APP", "BRZE", "S", "CYBR", "TENB",
+        "RPD", "SUMO", "NEWR", "DT", "PD", "BSY", "MTTR", "ASAN",
+        "FIVN", "RNG", "TOST", "SQ", "AFRM", "UPST", "LMND", "ROOT",
+        "OPEN", "OPENDOOR", "RDFN", "EXPI", "COUR", "DUOL", "GENI",
+        "DKNG", "PENN", "RSI", "SKLZ", "SRAD", "EVBG", "MSTR", "CLSK",
+        "MARA", "RIOT", "HUT", "BTBT", "SOS", "CAN", "GREE", "BITF",
+        "NVAX", "MRNA", "BNTX", "VCNX", "IOVA", "SGEN", "EXAS", "NTRA",
+        "RARE", "ALNY", "IONS", "SRPT", "BMRN", "JAZZ", "UTHR", "NBIX",
+        "HZNP", "INCY", "TECH", "BIO", "HOLX", "ALGM", "SLAB", "SWKS",
+        "MPWR", "OLED", "MKSI", "ENTG", "ONTO", "WOLF", "DIOD", "SYNA",
+        "POWI", "CRUS", "AMBA", "SITM", "RMBS", "ACLS", "FORM", "ICHR",
+        "AXTI", "CAMT", "UCTT", "VECO", "AEHR", "MTSI", "MACOM", "SMTC",
+        "HIMX", "AOSL", "INDI", "SIMO", "GSIT", "QUIK", "VSH", "SGH",
+        "ZBRA", "EPAM", "GLOB", "EXLS", "PRFT", "ASGN", "FICO", "PAYC",
+        "PCTY", "TYL", "GWRE", "MANH", "NCNO", "APPF", "YEXT", "SPSC",
+        "EVBG", "MODN", "PLMR", "QTWO", "ALTR", "ALKT", "NTCT", "CGNX",
+        "OMCL", "MGNI", "PUBM", "DV", "APPS", "INMD", "PODD", "NVRO",
+        "AXNX", "TNDM", "HALO", "XRAY", "MASI", "OFIX", "LNTH", "CAKE",
+        "TXRH", "WING", "SHAK", "PLAY", "EAT", "DRI", "BLMN", "DIN",
+        "BJRI", "CHUY", "KURA", "BROS", "LOCO", "FAT", "PZZA", "WEN",
+        "JACK", "NDLS", "SONC", "ARCO", "DEL", "DNUT", "OLO", "PTLO",
+        "FWRG", "LSCC", "ACAD", "EXEL", "MEDP", "IRTC", "QDEL", "FTRE",
+        "OGN", "OMCL", "PRGO", "VRTV", "PETQ", "CHWY", "WOOF", "FRPT",
     ]
 
 
