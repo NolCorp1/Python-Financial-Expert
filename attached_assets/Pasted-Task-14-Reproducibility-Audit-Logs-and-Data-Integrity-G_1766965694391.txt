@@ -1,0 +1,138 @@
+Task 14 — Reproducibility, Audit Logs, and Data Integrity Guardrails
+================================================================================
+Objective
+---------
+Make the system reliable and debuggable at scale by adding:
+1) Full run manifest + provenance (what data, what params, what code version)
+2) Deterministic randomness and stable ordering
+3) Data integrity checks (splits, NaNs, missing bars, timezone issues)
+4) Backtest/optimizer parity verification (same config => same results)
+5) Summary reports that highlight what changed between runs
+
+This task does NOT change strategy behavior.
+It makes outcomes trustworthy.
+
+Files to Edit
+-------------
+- optimize.py
+- main.py
+- price_cache.py (or equivalent)
+- (optional) backtester.py
+- replit.md
+
+1) Write a Run Manifest JSON for Every Optimize + Validate + Backtest Run
+-------------------------------------------------------------------------
+Create outputs/manifests/<run_id>_manifest.json
+
+Include:
+- run_id (timestamp + short hash)
+- command line used
+- mode: optimize / validate / backtest
+- universe: nasdaq/demo/custom, max_stocks, liquidity filters
+- date range used (start/end)
+- symbols_count_requested, symbols_count_used
+- list of symbols USED (write to outputs/manifests/<run_id>_symbols.txt)
+- price cache stats: hits/misses, cache_dir, parquet engine, pyarrow version
+- yfinance version, pandas version, numpy/scipy versions
+- OS / python version
+- git commit hash if available (optional; if not, write "unknown")
+- strategy config applied (embed the exact config JSON used)
+
+Acceptance:
+- Every run produces a manifest + symbols file.
+
+2) Deterministic Ordering + Seeds Everywhere
+--------------------------------------------
+Ensure:
+- Random sampling in grids uses a fixed seed that is stored in manifest and printed
+- Symbols are sorted deterministically before selection (unless randomize intentionally)
+- If you sample symbols (max-stocks), allow:
+  --symbols-seed 123
+to choose a deterministic subset. Store seed and chosen list.
+
+Acceptance:
+- Same command twice => identical symbol subset and identical results (given cache stable).
+
+3) Price Cache Integrity + Normalization
+----------------------------------------
+In price_cache module:
+- Normalize index to timezone-naive (UTC stripped), sorted, no duplicates
+- Validate OHLC columns exist and are numeric
+- Detect and log:
+  - large gaps in dates (e.g., missing > 5 consecutive business days)
+  - NaNs in OHLC
+  - zero/negative prices
+- If invalid, re-download symbol and overwrite parquet safely (atomic write).
+
+Add output:
+- outputs/price_cache_report.csv
+  columns: symbol, cached, downloaded, rows, start, end, nan_count, duplicate_dates, status
+
+Acceptance:
+- Corrupt cached files are automatically repaired.
+
+4) Parity Check: Config-Driven Backtest vs Validation Mode
+----------------------------------------------------------
+Add a small function:
+- run_backtest_with_config(config_path, symbols_subset, fixed_dates)
+
+Then add a command:
+python main.py --config outputs/strategy_best_config.json --parity-check
+
+Parity check does:
+- run via main path
+- run via validation path
+- compare:
+  - number of trades
+  - end equity (within tiny tolerance)
+  - max DD
+If mismatch, print a loud warning + write diff file.
+
+Acceptance:
+- Parity check passes reliably.
+
+5) “What Changed?” Diff Helper
+------------------------------
+Add a helper script or function:
+- scripts/diff_runs.py OR built into optimize.py
+
+It compares two manifests and reports:
+- config diff (only keys that changed)
+- symbol list diff
+- metric diff (return, dd, trades)
+- regime / corr skip counters diff
+
+Output:
+- outputs/diff_<runA>_<runB>.txt
+
+Acceptance:
+- You can quickly see what moved performance.
+
+6) Documentation Updates
+------------------------
+Update replit.md with:
+- How to reproduce a run
+- Where manifests live
+- How to run parity check
+- How to diff runs
+
+Manual Test Plan
+----------------
+1) Run validate-best twice:
+python optimize.py --validate-best --validate-stocks 200
+Repeat exact command.
+Verify:
+- same symbols list
+- same end equity/trades
+- manifests saved
+
+2) Corrupt one parquet file intentionally (truncate) and rerun validate:
+Verify it detects and repairs.
+
+3) Run parity check:
+python main.py --config outputs/strategy_best_config.json --universe nasdaq --max-stocks 100 --backtest-v2 --parity-check
+
+Non-Goals
+---------
+- New strategy features
+- Live trading integration
