@@ -131,6 +131,13 @@ The CSV contains:
 - requests: HTTP requests
 
 ## Recent Changes
+- 2025-12-28: Correlation & Cluster Caps (Task 10)
+  - Added BacktestConfig fields: use_correlation_caps, corr_lookback_days, max_corr_to_existing, use_cluster_caps, n_clusters, max_positions_per_cluster
+  - Hierarchical clustering (scipy) for symbol grouping
+  - Entry caps: skip if correlation >= 0.8 or cluster already at limit
+  - Skip counters: skipped_corr_cap, skipped_cluster_cap
+  - No-lookahead: correlation computed from data strictly before first signal date
+  - CLI: --use-correlation-caps, --corr-lookback-days, --max-corr-to-existing, --use-cluster-caps, --n-clusters, --max-positions-per-cluster
 - 2025-12-24: Walk-Forward v2 (Task 9)
   - Expanded parameter grid: portfolio/exit knobs (risk_fraction_forming, max_positions_forming, FORMING exit rules, CONFIRMED partial TP/trailing)
   - Composite scoring: trade-count penalty, exposure penalty, max DD constraint
