@@ -1,0 +1,210 @@
+Task 16 — Fix Score Inversion (Attribution + Score Policy + Feature Modes)
+==============================================================================
+Objective
+---------
+Your current Pattern Quality Score is inverted on recent backtests:
+high-score buckets underperform. The scoring pipeline is wired correctly,
+so Task 16 focuses on diagnosing which features are driving inversion and
+adding safe, no-lookahead calibration knobs.
+
+We will:
+1) Add feature attribution diagnostics (per-feature correlation + quintiles)
+2) Add score_policy modes: RAW vs INVERT (fast inversion proof) vs CALIBRATED (optional)
+3) Add feature modes to trend + breakout + volume scoring to correct likely directionality
+4) Extend walk-forward optimization grid to select the best score policy + thresholds/top-k OOS
+
+No-Lookahead Requirements
+-------------------------
+- All score computations must use <= entry_date-1 data
+- CONFIRMED breakout candle is allowed (entry is next open), but any “follow-through”
+  after breakout day is NOT allowed in scoring.
+
+Files to Edit
+-------------
+- pattern_scoring.py
+- metrics.py
+- strategy.py
+- main.py
+- optimize.py
+
+------------------------------------------------------------------------------
+1) Add Feature Attribution Report (Metrics)
+------------------------------------------------------------------------------
+In metrics.py, implement:
+
+def compute_feature_attribution_report(trades_df: pd.DataFrame) -> pd.DataFrame:
+  - Inputs: trades_df with columns:
+      pattern_score,
+      symmetry_score, neckline_score, separation_score,
+      breakout_strength_score, volume_score, trend_context_score,
+      pnl_r_multiple, pnl_dollars, win (or compute win from pnl_dollars)
+  - Output columns per feature:
+      feature,
+      corr_to_r,
+      corr_to_win,
+      mean_r,
+      quintile_1_mean_r ... quintile_5_mean_r,
+      quintile_1_win_rate ... quintile_5_win_rate,
+      n
+  - Use pandas qcut into 5 quintiles for each feature
+  - If qcut fails due to duplicates, fall back to cut
+
+Write report:
+- outputs/feature_attribution_report.csv
+
+Acceptance:
+- After a backtest run, feature_attribution_report.csv is created and clearly shows
+  which features are negatively correlated with outcomes.
+
+------------------------------------------------------------------------------
+2) Add score_policy to Scoring + Filtering
+------------------------------------------------------------------------------
+In pattern_scoring.py:
+- Add parameter score_policy: str = "RAW" in compute_pattern_quality_score()
+- Behavior:
+  - RAW: pattern_score as computed now
+  - INVERT: pattern_score = 100 - pattern_score (quick inversion diagnostic)
+  - (Optional later) CALIBRATED: placeholder, not required in this task
+
+Also update filter_signals_by_score() to use:
+- score = sig.meta.get('pattern_score', 0)  (same)
+No changes needed except ensure meta always contains the final policy-adjusted score.
+
+In strategy.py:
+- When computing score, accept score_policy and pass through to compute_pattern_quality_score()
+- Store into meta:
+  - meta["pattern_score_policy"] = score_policy
+  - meta already stores pattern_score + feature fields
+
+In main.py:
+- Add CLI flag:
+  --score-policy RAW|INVERT  (default RAW)
+- Pass it through anywhere signals are generated
+
+Acceptance:
+- Running with --score-policy INVERT flips bucket performance if inversion is present
+  (this is a diagnostic check, not a final solution).
+
+------------------------------------------------------------------------------
+3) Add Trend Feature Mode (Primary suspected inversion driver)
+------------------------------------------------------------------------------
+In pattern_scoring.py update compute_trend_context_score() to support modes:
+
+trend_mode: str = "ABOVE_MA200"
+Modes:
+- ABOVE_MA200: current behavior (1.0 if close_pre > ma200 else 0.5)
+- BELOW_MA200: (1.0 if close_pre < ma200 else 0.5)
+- NEUTRAL: always 0.5 (removes trend influence)
+
+Implementation:
+- Add trend_mode param to compute_trend_context_score()
+- Add trend_mode param to compute_pattern_quality_score()
+
+In main.py:
+- Add CLI flag:
+  --trend-score-mode ABOVE_MA200|BELOW_MA200|NEUTRAL (default NEUTRAL for safety)
+
+Acceptance:
+- You can run:
+  --trend-score-mode NEUTRAL (removes trend contribution)
+  --trend-score-mode BELOW_MA200 (tests if double bottoms work better below MA200)
+
+------------------------------------------------------------------------------
+4) Make Breakout Strength Less “Exhaustion Candle” Biased
+------------------------------------------------------------------------------
+In pattern_scoring.py adjust compute_breakout_strength_score():
+
+Currently:
+- body_pct / 0.03
+- green multiplier
+
+Upgrade (still no-lookahead):
+- Add margin above neckline:
+    margin_pct = (close - neckline) / neckline
+- Add ATR normalization (ATR% on pre-breakout bars):
+    atr_pct = ATR14 / close (computed up to breakout_idx-1)
+- Strength score should not reward huge bodies during extreme ATR%
+  Example formula (clipped):
+    body_score = clamp(body_pct / 0.02, 0..1)
+    margin_score = clamp(margin_pct / 0.01, 0..1)
+    vol_penalty = clamp(atr_pct / 0.05, 0..1)
+    breakout_score = (0.5*body_score + 0.5*margin_score) * (1 - 0.3*vol_penalty)
+    if not green: breakout_score *= 0.7
+
+Note:
+- Pass neckline into compute_breakout_strength_score()
+- Use ATR based only on bars BEFORE breakout day close (ATR window ends at breakout_idx-1)
+
+Acceptance:
+- Breakout strength remains in [0,1]
+- Adds neckline margin component
+- Adds mild ATR penalty to reduce “blow-off” candles
+
+------------------------------------------------------------------------------
+5) Make Volume Score More Robust (log transform + cap)
+------------------------------------------------------------------------------
+In pattern_scoring.py update CONFIRMED volume:
+
+Currently:
+  vol_score = clamp((vol_ratio - 1.0) / 1.0, 0, 1)
+
+Upgrade:
+- Use log transform to reduce extreme influence:
+    vol_ratio = breakout_vol / vol_ma20
+    vol_score = clamp((log(vol_ratio) - log(1.0)) / log(2.0), 0, 1)
+- This maps vol_ratio=2 -> 1.0, vol_ratio=1 -> 0.0 smoothly
+
+FORMING bottom volume can remain, but add cap:
+- vol_ratio_bottoms = vol_bottom2 / vol_bottom1
+- vol_ratio_bottoms = min(vol_ratio_bottoms, 2.0)
+
+Acceptance:
+- Volume score is less dominated by extreme spikes
+
+------------------------------------------------------------------------------
+6) Update Score Reports & Quick Experiment Script
+------------------------------------------------------------------------------
+In main.py after backtest:
+- Already outputs score_bucket_report.csv and score_threshold_report.csv
+- Add output for feature attribution:
+  outputs/feature_attribution_report.csv
+
+Add a short console summary:
+- Print top 2 features most positively correlated with pnl_r_multiple
+- Print top 2 most negatively correlated
+
+------------------------------------------------------------------------------
+7) Extend Walk-Forward Grid (small) to choose score knobs OOS
+------------------------------------------------------------------------------
+In optimize.py add parameters:
+- score_policy: ["RAW", "INVERT"]
+- min_pattern_score: [0, 40, 50, 60]
+- top_k_per_day: [0, 2, 3, 5]
+- trend_score_mode: ["NEUTRAL", "BELOW_MA200", "ABOVE_MA200"]
+
+Ensure constraints still apply (min trades/exposure).
+
+Acceptance:
+- WF output includes these chosen knobs
+- strategy_best_config.json includes them
+- validate-best uses them
+
+Manual Test Plan
+----------------
+1) Baseline:
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --min-pattern-score 0 --score-policy RAW --trend-score-mode NEUTRAL
+
+2) Inversion check:
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --score-policy INVERT --trend-score-mode NEUTRAL
+
+3) Trend mode check:
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --score-policy RAW --trend-score-mode BELOW_MA200
+
+4) Confirm outputs:
+- outputs/feature_attribution_report.csv created
+- score bucket monotonicity improves (or inversion is explained by attribution)
+
+Non-Goals
+---------
+- Full ML model scoring (XGBoost). Keep this deterministic + interpretable.
+- Adding new indicators beyond ATR% normalization in breakout strength.
