@@ -33,6 +33,14 @@ I prefer iterative development, so please propose changes and explain them thoro
   - **Outputs**: `score_policy_wf_summary.csv` (aggregated results by scoring config), `chosen_scoring_defaults.json` (selected defaults with reasoning), `validation_scoring_recommendation.txt` (comparison report).
   - **Monotonicity Check**: `check_score_monotonicity()` in `metrics.py` uses Spearman correlation to detect score inversion issues.
 - **Score-Based Risk Scaling** (Task 19): Scales position sizes based on pattern quality scores. Higher-quality patterns receive larger positions, lower-quality patterns receive smaller positions. Uses a smooth multiplier function: `score_mult = min_mult + (max_mult - min_mult) * (score/100)^alpha`. Default settings: `min_mult=0.60`, `max_mult=1.20`, `alpha=1.0`. Applies to both FORMING and CONFIRMED entries. Includes an absolute cap (`max_risk_fraction_per_trade=0.02`) to prevent excessive risk. No lookahead: only uses pre-entry pattern score.
+- **Portfolio Capital Allocation Engine** (Task 20): Implements signal competition for a finite daily/weekly risk budget. Signals are ranked by allocation_score and scaled proportionally when demand exceeds budget. Key parameters:
+  - `daily_risk_budget` (default 0.04 = 4%): Max total risk per day
+  - `daily_risk_budget_forming` (default 0.015 = 1.5%): Max daily risk for FORMING entries
+  - `allocation_scaling_mode`: PROPORTIONAL (scales all signals down) or HARD_CUTOFF (drops lowest priority)
+  - `min_allocation_scale` (default 0.25): Floor for proportional scaling
+  - `max_signals_per_day`: Optional cap on signals after ranking
+  - Trade output includes: allocation_score, allocation_scale, allocation_rank, allocation_budget_used
+  - No lookahead: uses only pre-entry data for ranking and allocation
 - **Market Regime Filter**: Incorporates a market regime filter with soft-gating using MA-based trend and volatility detection to adjust risk.
 - **Correlation & Cluster Caps**: Implements portfolio-level risk management by limiting positions based on symbol correlation and cluster membership.
 - **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules for "FORMING" patterns.

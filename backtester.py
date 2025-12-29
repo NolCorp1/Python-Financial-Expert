@@ -103,6 +103,53 @@ class BacktestConfig:
     score_risk_apply_to: str = "BOTH"
     score_risk_missing_policy: str = "NEUTRAL"
     max_risk_fraction_per_trade: float = 0.02
+    
+    # Portfolio capital allocation (Task 20)
+    use_portfolio_allocator: bool = True
+    daily_risk_budget: float = 0.04
+    weekly_risk_budget: Optional[float] = None
+    daily_risk_budget_forming: Optional[float] = 0.015
+    daily_risk_budget_confirmed: Optional[float] = None
+    allocation_rank_metric: str = "score_weighted"
+    max_signals_per_day: Optional[int] = None
+    allocation_scaling_mode: str = "PROPORTIONAL"
+    min_allocation_scale: float = 0.25
+
+
+def compute_signal_allocation_score(signal: 'TradeSignal') -> float:
+    """
+    Compute ranking score for capital allocation.
+    Uses only pre-entry data (no lookahead).
+    Higher score = higher priority for capital.
+    """
+    score = 1.0
+
+    if signal.meta:
+        ps = signal.meta.get("pattern_score")
+        sr = signal.meta.get("score_risk_mult", 1.0)
+        rr = signal.meta.get("regime_risk_mult", 1.0)
+
+        if ps is not None:
+            try:
+                score *= float(ps) / 100.0
+            except (ValueError, TypeError):
+                pass
+
+        try:
+            score *= float(sr)
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            score *= float(rr)
+        except (ValueError, TypeError):
+            pass
+
+    # Prefer CONFIRMED slightly by default
+    if getattr(signal, 'entry_kind', '') == "CONFIRMED":
+        score *= 1.10
+
+    return float(max(0.0, score))
 
 
 def compute_score_risk_mult(
@@ -127,6 +174,126 @@ def compute_score_risk_mult(
     s = max(0.0, min(100.0, s)) / 100.0
     shaped = s ** float(alpha)
     return float(min_mult) + (float(max_mult) - float(min_mult)) * shaped
+
+
+@dataclass
+class AllocationCandidate:
+    """
+    Represents a signal candidate for capital allocation.
+    Holds pre-computed data for ranking and sizing.
+    """
+    signal: 'TradeSignal'
+    entry_fill: float
+    stop_dist: float
+    risk_fraction: float  # base risk fraction after regime/score adjustments
+    allocation_score: float
+    regime_risk_mult: float
+    score_risk_mult: float
+    allocation_scale: float = 1.0  # set by allocator
+    allocation_rank: int = 0  # set by allocator
+    allocation_budget_used: float = 0.0  # set by allocator
+
+
+def allocate_daily_signals(
+    candidates: List[AllocationCandidate],
+    current_equity: float,
+    cfg: BacktestConfig,
+    weekly_risk_used: float = 0.0
+) -> List[AllocationCandidate]:
+    """
+    Apply portfolio capital allocation constraints to daily signal candidates.
+    Ranks candidates and allocates capital subject to daily and weekly budgets.
+    
+    Uses greedy allocation: add candidates in priority order until budget exhausted.
+    This ensures total allocated risk never exceeds configured budgets.
+    
+    No-lookahead safe: uses only pre-computed allocation_score.
+    
+    Args:
+        candidates: List of AllocationCandidate objects
+        current_equity: Current portfolio equity
+        cfg: BacktestConfig with budget parameters
+        weekly_risk_used: Risk already used in rolling weekly window (for weekly cap)
+    
+    Returns:
+        Filtered and scaled list of candidates with allocation_scale populated.
+    """
+    if not candidates:
+        return []
+    
+    # Sort by allocation_score descending (highest priority first)
+    candidates.sort(key=lambda c: c.allocation_score, reverse=True)
+    
+    # Apply max_signals_per_day soft cap
+    if cfg.max_signals_per_day is not None and len(candidates) > cfg.max_signals_per_day:
+        candidates = candidates[:cfg.max_signals_per_day]
+    
+    # Assign ranks
+    for rank, cand in enumerate(candidates, start=1):
+        cand.allocation_rank = rank
+    
+    # Budget limits
+    daily_budget = cfg.daily_risk_budget
+    forming_budget = cfg.daily_risk_budget_forming if cfg.daily_risk_budget_forming is not None else daily_budget
+    confirmed_budget = cfg.daily_risk_budget_confirmed if cfg.daily_risk_budget_confirmed is not None else daily_budget
+    weekly_budget = cfg.weekly_risk_budget if cfg.weekly_risk_budget is not None else float('inf')
+    
+    # Track remaining budgets (greedy allocation)
+    remaining_daily = daily_budget
+    remaining_forming = forming_budget
+    remaining_confirmed = confirmed_budget
+    remaining_weekly = max(0.0, weekly_budget - weekly_risk_used)
+    
+    result = []
+    for cand in candidates:
+        requested = cand.risk_fraction
+        is_forming = cand.signal.entry_kind == "FORMING"
+        
+        # Determine applicable budget caps
+        if is_forming:
+            kind_cap = min(remaining_daily, remaining_forming, remaining_weekly)
+        else:
+            kind_cap = min(remaining_daily, remaining_confirmed, remaining_weekly)
+        
+        # Skip if no budget remains
+        if kind_cap <= 0:
+            continue
+        
+        # Calculate scale needed to fit in budget
+        if requested <= kind_cap:
+            scale = 1.0
+        else:
+            scale = kind_cap / requested
+        
+        # Apply scaling mode
+        if scale < cfg.min_allocation_scale:
+            if cfg.allocation_scaling_mode.upper() == "HARD_CUTOFF":
+                # Drop this candidate if it would scale below minimum
+                continue
+            else:
+                # PROPORTIONAL mode: clamp to min_allocation_scale
+                # Check if we have enough budget for the minimum allocation
+                min_alloc = requested * cfg.min_allocation_scale
+                if min_alloc > kind_cap:
+                    continue  # Can't fit even minimum allocation
+                scale = cfg.min_allocation_scale
+        
+        # Compute final allocated risk
+        allocated = requested * scale
+        
+        # Update remaining budgets
+        remaining_daily -= allocated
+        remaining_weekly -= allocated
+        if is_forming:
+            remaining_forming -= allocated
+        else:
+            remaining_confirmed -= allocated
+        
+        cand.allocation_scale = scale
+        cand.allocation_budget_used = allocated
+        result.append(cand)
+    
+    return result
 
 
 @dataclass
@@ -429,6 +596,10 @@ def run_backtest(
     count_forming = 0
     count_confirmed = 0
     
+    # Weekly risk tracking for rolling budget enforcement
+    # List of (date, risk_used) tuples for last 5 trading days
+    weekly_risk_history: List[Tuple[pd.Timestamp, float]] = []
+    
     corr_matrix = pd.DataFrame()
     clusters: Dict[str, int] = {}
     
@@ -512,6 +683,11 @@ def run_backtest(
             'risk_fraction_applied': round(pos.meta.get('risk_fraction_applied', 0.0), 6) if pos.meta else 0.0,
             'score_risk_mult': round(pos.meta.get('score_risk_mult', 1.0), 4) if pos.meta else 1.0,
             'regime_risk_mult': round(pos.meta.get('regime_risk_mult', 1.0), 4) if pos.meta else 1.0,
+            'allocation_score': round(pos.meta.get('allocation_score', 0.0), 4) if pos.meta else 0.0,
+            'allocation_scale': round(pos.meta.get('allocation_scale', 1.0), 4) if pos.meta else 1.0,
+            'allocation_rank': int(pos.meta.get('allocation_rank', 0)) if pos.meta else 0,
+            'allocation_budget_used': round(pos.meta.get('allocation_budget_used', 0.0), 6) if pos.meta else 0.0,
+            'daily_risk_budget': round(cfg.daily_risk_budget, 4),
             'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
         }
     
@@ -640,58 +816,75 @@ def run_backtest(
                 exited_today[exit_date] = set()
             exited_today[exit_date].add(sym)
         
+        # Collect all signals for current_date
+        todays_signals = []
         while signal_idx < len(all_signals):
             signal = all_signals[signal_idx]
-            
             if signal.entry_date > current_date:
                 break
-            
-            if signal.entry_date < current_date:
-                signal_idx += 1
-                continue
-            
+            if signal.entry_date == current_date:
+                todays_signals.append(signal)
+            signal_idx += 1
+        
+        # Compute current equity once for all signals
+        current_equity = cash + sum(
+            pos.shares_remaining * _get_prior_close(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)
+            for pos in open_positions.values()
+        )
+        
+        # Pre-compute regime signals for current_date (once)
+        current_trend = None
+        current_vol = None
+        if cfg.use_regime_filter and len(regime_df) > 0:
+            if current_date in regime_df.index:
+                current_trend = regime_df.loc[current_date, 'trend_signal']
+                current_vol = regime_df.loc[current_date, 'vol_signal']
+        
+        # Build candidates for allocation
+        candidates: List[AllocationCandidate] = []
+        symbols_in_candidates: set = set()
+        
+        for signal in todays_signals:
             sym = signal.symbol
             
+            # Basic validation
             if sym not in price_data_by_symbol:
-                signal_idx += 1
                 continue
-            
             df = price_data_by_symbol[sym]
             if current_date not in df.index:
-                signal_idx += 1
                 continue
-            
             bar = df.loc[current_date]
             open_price = bar['Open']
-            
             if open_price < cfg.min_price:
-                signal_idx += 1
                 continue
             
+            # Symbol already open check
             if cfg.one_position_per_symbol and sym in open_positions:
                 skipped_symbol_already_open += 1
-                signal_idx += 1
                 continue
             
-            open_total = len(open_positions)
-            open_forming = sum(1 for p in open_positions.values() if p.entry_kind == "FORMING")
-            open_confirmed = sum(1 for p in open_positions.values() if p.entry_kind == "CONFIRMED")
+            # For batched processing, also skip if we already have a candidate for this symbol
+            if cfg.one_position_per_symbol and sym in symbols_in_candidates:
+                continue
+            
+            # Position limits check (using current state)
+            open_total = len(open_positions) + len(candidates)
+            open_forming = sum(1 for p in open_positions.values() if p.entry_kind == "FORMING") + \
+                          sum(1 for c in candidates if c.signal.entry_kind == "FORMING")
+            open_confirmed = sum(1 for p in open_positions.values() if p.entry_kind == "CONFIRMED") + \
+                            sum(1 for c in candidates if c.signal.entry_kind == "CONFIRMED")
             
             if open_total >= cfg.max_positions_total:
                 skipped_max_total += 1
-                signal_idx += 1
                 continue
-            
             if signal.entry_kind == "FORMING" and open_forming >= cfg.max_positions_forming:
                 skipped_max_forming += 1
-                signal_idx += 1
                 continue
-            
             if signal.entry_kind == "CONFIRMED" and open_confirmed >= cfg.max_positions_confirmed:
                 skipped_max_confirmed += 1
-                signal_idx += 1
                 continue
             
+            # Correlation caps
             if cfg.use_correlation_caps and len(open_positions) > 0 and sym in corr_matrix.columns:
                 max_corr_found = 0.0
                 for open_sym in open_positions.keys():
@@ -704,9 +897,9 @@ def run_backtest(
                             pass
                 if max_corr_found >= cfg.max_corr_to_existing:
                     skipped_corr_cap += 1
-                    signal_idx += 1
                     continue
             
+            # Cluster caps
             if cfg.use_cluster_caps and sym in clusters:
                 sym_cluster = clusters[sym]
                 cluster_count = sum(
@@ -715,17 +908,11 @@ def run_backtest(
                 )
                 if cluster_count >= cfg.max_positions_per_cluster:
                     skipped_cluster_cap += 1
-                    signal_idx += 1
                     continue
             
-            current_trend = None
-            current_vol = None
+            # Regime filter
             regime_risk_mult = 1.0
-            if cfg.use_regime_filter and len(regime_df) > 0:
-                if current_date in regime_df.index:
-                    current_trend = regime_df.loc[current_date, 'trend_signal']
-                    current_vol = regime_df.loc[current_date, 'vol_signal']
-                
+            if cfg.use_regime_filter:
                 if cfg.regime_soft_gate:
                     if signal.entry_kind == "FORMING":
                         if current_trend == "DOWN":
@@ -740,40 +927,30 @@ def run_backtest(
                             reduced_regime_confirmed_highvol += 1
                 else:
                     if signal.entry_kind == "FORMING":
-                        if current_trend == "DOWN":
+                        if current_trend == "DOWN" or current_vol == "HIGH":
                             skipped_regime_hard += 1
-                            signal_idx += 1
-                            continue
-                        if current_vol == "HIGH":
-                            skipped_regime_hard += 1
-                            signal_idx += 1
                             continue
             
+            # Same day reentry check
             if not cfg.allow_same_day_reentry:
                 if current_date in exited_today and sym in exited_today[current_date]:
-                    signal_idx += 1
                     continue
             
+            # Compute entry and stop distance
             entry_fill = open_price * (1 + cfg.slippage_bps / 10000)
             stop_dist = entry_fill - signal.stop_loss
-            
             if stop_dist <= 0:
                 skipped_invalid_sizing += 1
-                signal_idx += 1
                 continue
             
-            current_equity = cash + sum(
-                pos.shares_remaining * _get_prior_close(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)
-                for pos in open_positions.values()
-            )
-            
+            # Compute risk fraction
             if signal.entry_kind == "CONFIRMED":
                 risk_fraction = cfg.risk_fraction_confirmed
             else:
                 risk_fraction = cfg.risk_fraction_forming
-            
             risk_fraction *= regime_risk_mult
             
+            # Apply score-based scaling
             score_mult = 1.0
             if cfg.use_score_risk_scaling:
                 apply_to = (cfg.score_risk_apply_to or "BOTH").upper()
@@ -784,9 +961,7 @@ def run_backtest(
                     or (apply_to == "CONFIRMED" and kind == "CONFIRMED")
                 )
                 if should_apply:
-                    pattern_score = None
-                    if signal.meta:
-                        pattern_score = signal.meta.get("pattern_score", None)
+                    pattern_score = signal.meta.get("pattern_score", None) if signal.meta else None
                     score_mult = compute_score_risk_mult(
                         pattern_score=pattern_score,
                         alpha=cfg.score_risk_alpha,
@@ -796,39 +971,75 @@ def run_backtest(
                     )
                     risk_fraction *= score_mult
             
+            # Cap risk fraction
             if cfg.max_risk_fraction_per_trade is not None:
                 risk_fraction = min(risk_fraction, cfg.max_risk_fraction_per_trade)
             
-            risk_budget = risk_fraction * current_equity
-            shares = int(math.floor(risk_budget / stop_dist))
+            # Compute allocation score for ranking
+            alloc_score = compute_signal_allocation_score(signal)
+            
+            # Create candidate
+            candidate = AllocationCandidate(
+                signal=signal,
+                entry_fill=entry_fill,
+                stop_dist=stop_dist,
+                risk_fraction=risk_fraction,
+                allocation_score=alloc_score,
+                regime_risk_mult=regime_risk_mult,
+                score_risk_mult=score_mult,
+            )
+            candidates.append(candidate)
+            symbols_in_candidates.add(sym)
+        
+        # Apply portfolio allocation if enabled
+        if cfg.use_portfolio_allocator and candidates:
+            # Compute rolling weekly risk used (last 5 trading days)
+            weekly_risk_used = sum(risk for _, risk in weekly_risk_history[-4:])  # -4 because today not yet added
+            candidates = allocate_daily_signals(candidates, current_equity, cfg, weekly_risk_used)
+        
+        # Execute entries for allocated candidates
+        for cand in candidates:
+            signal = cand.signal
+            sym = signal.symbol
+            
+            # Apply allocation scale to risk fraction
+            final_risk_fraction = cand.risk_fraction * cand.allocation_scale
+            
+            # Calculate shares from scaled risk
+            risk_budget = final_risk_fraction * current_equity
+            shares = int(math.floor(risk_budget / cand.stop_dist))
             
             if shares < 1:
                 skipped_invalid_sizing += 1
-                signal_idx += 1
                 continue
             
-            required_capital = entry_fill * shares + cfg.commission_per_trade
+            # Check available capital
+            required_capital = cand.entry_fill * shares + cfg.commission_per_trade
             if required_capital > cash:
-                shares = int((cash - cfg.commission_per_trade) / entry_fill)
+                shares = int((cash - cfg.commission_per_trade) / cand.entry_fill)
                 if shares < 1:
                     skipped_invalid_sizing += 1
-                    signal_idx += 1
                     continue
             
             entry_commission = cfg.commission_per_trade
-            cash -= (entry_fill * shares + entry_commission)
+            cash -= (cand.entry_fill * shares + entry_commission)
             
+            # Build position metadata
             pos_meta = signal.meta.copy() if signal.meta else {}
-            pos_meta["risk_fraction_applied"] = float(risk_fraction)
-            pos_meta["score_risk_mult"] = float(score_mult)
-            pos_meta["regime_risk_mult"] = float(regime_risk_mult)
+            pos_meta["risk_fraction_applied"] = float(final_risk_fraction)
+            pos_meta["score_risk_mult"] = float(cand.score_risk_mult)
+            pos_meta["regime_risk_mult"] = float(cand.regime_risk_mult)
+            pos_meta["allocation_score"] = float(cand.allocation_score)
+            pos_meta["allocation_scale"] = float(cand.allocation_scale)
+            pos_meta["allocation_rank"] = int(cand.allocation_rank)
+            pos_meta["allocation_budget_used"] = float(cand.allocation_budget_used)
             
             position = OpenPosition(
                 symbol=sym,
                 pattern_id=signal.pattern_id,
                 entry_kind=signal.entry_kind,
                 entry_date=current_date,
-                entry_fill=entry_fill,
+                entry_fill=cand.entry_fill,
                 stop_loss=signal.stop_loss,
                 original_stop_loss=signal.stop_loss,
                 take_profit=signal.take_profit,
@@ -842,13 +1053,18 @@ def run_backtest(
             open_positions[sym] = position
             
             if signal.entry_kind == "FORMING":
-                total_risk_forming += risk_fraction
+                total_risk_forming += final_risk_fraction
                 count_forming += 1
             else:
-                total_risk_confirmed += risk_fraction
+                total_risk_confirmed += final_risk_fraction
                 count_confirmed += 1
-            
-            signal_idx += 1
+        
+        # Track daily risk for weekly budget enforcement
+        todays_risk = sum(c.allocation_budget_used for c in candidates)
+        weekly_risk_history.append((current_date, todays_risk))
+        # Keep only last 5 trading days
+        if len(weekly_risk_history) > 5:
+            weekly_risk_history = weekly_risk_history[-5:]
         
         open_value = sum(
             pos.shares_remaining * _get_price(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)

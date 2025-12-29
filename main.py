@@ -513,6 +513,28 @@ def main():
     parser.add_argument('--max-risk-fraction-per-trade', type=float, default=0.02,
                        help='Absolute max risk fraction after all multipliers (safety cap)')
     
+    # Portfolio allocation (Task 20)
+    parser.add_argument('--use-portfolio-allocator', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Enable portfolio capital allocation (signals compete for daily budget)')
+    parser.add_argument('--daily-risk-budget', type=float, default=0.04,
+                       help='Max total risk allocated per day as fraction of equity (0.04 = 4%%)')
+    parser.add_argument('--weekly-risk-budget', type=float, default=None,
+                       help='Optional rolling weekly risk budget cap (None = disabled)')
+    parser.add_argument('--daily-risk-budget-forming', type=float, default=0.015,
+                       help='Max daily risk for FORMING entries (None = use daily_risk_budget)')
+    parser.add_argument('--daily-risk-budget-confirmed', type=float, default=None,
+                       help='Max daily risk for CONFIRMED entries (None = use daily_risk_budget)')
+    parser.add_argument('--allocation-rank-metric', type=str, default='score_weighted',
+                       help='Metric for ranking signals in allocation (score_weighted)')
+    parser.add_argument('--max-signals-per-day', type=int, default=None,
+                       help='Soft cap on signals per day after ranking (None = unlimited)')
+    parser.add_argument('--allocation-scaling-mode', type=str, default='PROPORTIONAL',
+                       choices=['PROPORTIONAL', 'HARD_CUTOFF'],
+                       help='How to handle over-budget: PROPORTIONAL scales down, HARD_CUTOFF drops')
+    parser.add_argument('--min-allocation-scale', type=float, default=0.25,
+                       help='Floor for allocation scaling (0.25 = 25%% of original)')
+    
     parser.add_argument('--symbols-seed', type=int, default=None,
                        help='Random seed for deterministic symbol subset selection')
     parser.add_argument('--parity-check', action='store_true',
@@ -1006,13 +1028,27 @@ def main():
             score_risk_max_mult=args.score_risk_max_mult,
             score_risk_apply_to=args.score_risk_apply_to.upper(),
             score_risk_missing_policy=args.score_risk_missing_policy.upper(),
-            max_risk_fraction_per_trade=args.max_risk_fraction_per_trade
+            max_risk_fraction_per_trade=args.max_risk_fraction_per_trade,
+            use_portfolio_allocator=args.use_portfolio_allocator.lower() == 'true',
+            daily_risk_budget=args.daily_risk_budget,
+            weekly_risk_budget=args.weekly_risk_budget,
+            daily_risk_budget_forming=args.daily_risk_budget_forming,
+            daily_risk_budget_confirmed=args.daily_risk_budget_confirmed,
+            allocation_rank_metric=args.allocation_rank_metric,
+            max_signals_per_day=args.max_signals_per_day,
+            allocation_scaling_mode=args.allocation_scaling_mode.upper(),
+            min_allocation_scale=args.min_allocation_scale
         )
         
         score_status = "ON" if cfg.use_score_risk_scaling else "OFF"
         print(f"Score risk scaling: {score_status} | apply_to={cfg.score_risk_apply_to} | "
               f"alpha={cfg.score_risk_alpha:.1f} | min={cfg.score_risk_min_mult:.2f} | "
               f"max={cfg.score_risk_max_mult:.2f} | cap={cfg.max_risk_fraction_per_trade:.3f}")
+        
+        alloc_status = "ON" if cfg.use_portfolio_allocator else "OFF"
+        forming_budget = f"{cfg.daily_risk_budget_forming*100:.1f}%" if cfg.daily_risk_budget_forming else "N/A"
+        print(f"Portfolio allocator: {alloc_status} | daily_budget={cfg.daily_risk_budget*100:.1f}% | "
+              f"forming_budget={forming_budget} | scaling={cfg.allocation_scaling_mode}")
         
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)
         

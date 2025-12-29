@@ -1,0 +1,297 @@
+TASK 20 — Portfolio Capital Allocation & Signal Competition Engine
+
+GOAL
+Introduce a portfolio-level capital allocation system so that signals compete for a finite daily/weekly risk budget.
+This ensures capital is concentrated in the highest-quality opportunities and prevents over-allocation during signal clusters — without adding lookahead or changing signal generation logic.
+
+This task upgrades the system from “independent trade sizing” to a true portfolio allocator.
+
+──────────────────────────────────────────────────────────────────────────────
+WHY THIS MATTERS (CONTEXT)
+──────────────────────────────────────────────────────────────────────────────
+Up to Task 19, position sizing is:
+- Signal-local
+- Score-aware
+- Regime-aware
+
+But still:
+- Capital is allocated per trade, not per opportunity set
+- Multiple mediocre signals can crowd out elite setups
+- Drawdowns increase when many signals fire together
+
+Task 20 introduces:
+- Finite risk budgets
+- Signal competition
+- Proportional scaling when demand > supply
+
+This is a *structural* edge, not new alpha.
+
+──────────────────────────────────────────────────────────────────────────────
+HIGH-LEVEL BEHAVIOR
+──────────────────────────────────────────────────────────────────────────────
+For each trading day:
+
+1) Collect all candidate signals eligible for entry
+2) Rank them by quality / expected edge proxy
+3) Allocate capital subject to:
+   - Daily total risk budget
+   - Optional weekly budget
+   - Optional per-kind budgets (FORMING vs CONFIRMED)
+4) If total requested risk > budget:
+   - Scale positions proportionally
+   - Preserve relative conviction
+5) Record allocation diagnostics for analysis
+
+All logic uses ONLY pre-entry information (no lookahead).
+
+──────────────────────────────────────────────────────────────────────────────
+FILES TO MODIFY
+──────────────────────────────────────────────────────────────────────────────
+- backtester.py
+- main.py
+- optimize.py
+- metrics.py
+- replit.md
+
+──────────────────────────────────────────────────────────────────────────────
+PART 1 — BacktestConfig: Add Portfolio Budget Controls
+──────────────────────────────────────────────────────────────────────────────
+
+In backtester.py, extend BacktestConfig with:
+
+    # Portfolio capital allocation
+    use_portfolio_allocator: bool = True
+
+    # Risk budgets (fractions of equity)
+    daily_risk_budget: float = 0.04      # max total risk allocated per day
+    weekly_risk_budget: float | None = None  # optional rolling weekly cap
+
+    # Optional per-kind caps
+    daily_risk_budget_forming: float | None = 0.015
+    daily_risk_budget_confirmed: float | None = None
+
+    # Signal competition
+    allocation_rank_metric: str = "score_weighted"
+    max_signals_per_day: int | None = None  # soft cap after ranking
+
+    # Scaling behavior
+    allocation_scaling_mode: str = "PROPORTIONAL"  # PROPORTIONAL | HARD_CUTOFF
+    min_allocation_scale: float = 0.25  # floor when scaling down
+
+──────────────────────────────────────────────────────────────────────────────
+PART 2 — Signal Ranking Metric
+──────────────────────────────────────────────────────────────────────────────
+
+Add helper function (top-level in backtester.py):
+
+def compute_signal_allocation_score(signal) -> float:
+    """
+    Ranking score for capital allocation.
+    Uses only pre-entry data.
+    """
+    score = 1.0
+
+    if signal.meta:
+        ps = signal.meta.get("pattern_score")
+        sr = signal.meta.get("score_risk_mult", 1.0)
+        rr = signal.meta.get("regime_risk_mult", 1.0)
+
+        if ps is not None:
+            score *= ps / 100.0
+
+        score *= sr
+        score *= rr
+
+    # Prefer CONFIRMED slightly by default
+    if signal.entry_kind == "CONFIRMED":
+        score *= 1.10
+
+    return float(score)
+
+This metric must be:
+- Deterministic
+- Monotonic in quality
+- Pre-entry only
+
+──────────────────────────────────────────────────────────────────────────────
+PART 3 — Backtester: Capital Allocation Engine
+──────────────────────────────────────────────────────────────────────────────
+
+In run_backtest():
+
+A) Before processing entries on a given date:
+- Gather all signals whose entry_date == current_date
+- Filter by existing constraints (correlation caps, cluster caps, max positions)
+
+B) If use_portfolio_allocator is True:
+
+1) Compute requested risk per signal
+   requested_risk = equity × risk_fraction_applied
+
+2) Group signals:
+   - All
+   - FORMING
+   - CONFIRMED
+
+3) Determine applicable budgets:
+   - daily_risk_budget
+   - daily_risk_budget_forming (if set)
+   - daily_risk_budget_confirmed (if set)
+
+4) Rank signals by compute_signal_allocation_score()
+
+5) If max_signals_per_day is set:
+   - Keep only top-N ranked signals
+
+6) Allocation logic:
+   - Sum requested_risk across selected signals
+   - If <= budget → accept all
+   - If > budget:
+       - Compute scale = budget / total_requested
+       - If scale < min_allocation_scale:
+           - If allocation_scaling_mode == HARD_CUTOFF:
+               - Take top signals until budget exhausted
+           - Else:
+               - Clamp scale to min_allocation_scale
+       - Multiply each signal’s risk_fraction_applied by scale
+
+7) Apply scaled risk_fraction_applied to position sizing
+
+C) Store allocation metadata in signal.meta:
+    - allocation_score
+    - allocation_scale
+    - allocation_budget_used
+    - allocation_rank
+
+──────────────────────────────────────────────────────────────────────────────
+PART 4 — Trade Output Enhancements
+──────────────────────────────────────────────────────────────────────────────
+
+In close_position(), add columns to trades.csv:
+
+- allocation_score
+- allocation_scale
+- allocation_budget_used
+- allocation_rank
+- daily_risk_budget
+
+This enables:
+- Capital efficiency analysis
+- Post-trade diagnostics
+- Walk-forward tuning
+
+──────────────────────────────────────────────────────────────────────────────
+PART 5 — Metrics: Capital Efficiency Reporting
+──────────────────────────────────────────────────────────────────────────────
+
+In metrics.py, add:
+
+compute_capital_efficiency_metrics(trades_df):
+
+Outputs:
+- avg_allocation_scale
+- pct_trades_scaled_down
+- return_per_allocated_risk
+- capital_concentration_top20_pct
+- capital_concentration_top40_pct
+
+Also add:
+- allocation_bucket_report.csv (by allocation_score decile)
+
+──────────────────────────────────────────────────────────────────────────────
+PART 6 — main.py: CLI Flags
+──────────────────────────────────────────────────────────────────────────────
+
+Add flags:
+
+--use-portfolio-allocator true/false
+--daily-risk-budget 0.04
+--weekly-risk-budget
+--daily-risk-budget-forming
+--daily-risk-budget-confirmed
+--allocation-rank-metric score_weighted
+--max-signals-per-day
+--allocation-scaling-mode PROPORTIONAL|HARD_CUTOFF
+--min-allocation-scale 0.25
+
+Ensure:
+- Flags override config file
+- Config file persists these values
+
+Print banner summary at start of backtest:
+Portfolio allocator: ON | daily_budget=4.0% | scaling=PROPORTIONAL
+
+──────────────────────────────────────────────────────────────────────────────
+PART 7 — optimize.py: Tune Allocation Parameters
+──────────────────────────────────────────────────────────────────────────────
+
+Add small grid options:
+
+- daily_risk_budget: [0.03, 0.04, 0.05]
+- daily_risk_budget_forming: [0.01, 0.015, 0.02]
+- max_signals_per_day: [None, 3, 5]
+- allocation_scaling_mode: ["PROPORTIONAL"]
+- min_allocation_scale: [0.25, 0.40]
+
+Include in:
+- walk-forward optimization
+- best config selection
+- validation runs
+
+──────────────────────────────────────────────────────────────────────────────
+PART 8 — replit.md Documentation
+──────────────────────────────────────────────────────────────────────────────
+
+Add section:
+“Portfolio Capital Allocation Engine”
+
+Explain:
+- Why signals compete
+- How budgets work
+- Difference between PROPORTIONAL vs HARD_CUTOFF
+- Recommended defaults
+
+Example usage:
+python main.py --config outputs/strategy_best_config.json \
+  --use-portfolio-allocator true \
+  --daily-risk-budget 0.04 \
+  --daily-risk-budget-forming 0.015
+
+──────────────────────────────────────────────────────────────────────────────
+ACCEPTANCE CRITERIA
+──────────────────────────────────────────────────────────────────────────────
+
+1) Backtests run successfully with allocator ON and OFF
+2) When OFF, results match prior parity (within tolerance)
+3) trades.csv contains allocation fields populated
+4) Capital never exceeds configured budgets
+5) Walk-forward optimization completes and selects stable budget defaults
+6) Validation shows:
+   - Lower drawdown OR
+   - Higher return per unit risk OR
+   - Better capital concentration in top score deciles
+
+──────────────────────────────────────────────────────────────────────────────
+SANITY TESTS
+──────────────────────────────────────────────────────────────────────────────
+
+Demo:
+python main.py --universe demo --max-stocks 20 --backtest-v2 \
+  --use-portfolio-allocator true --daily-risk-budget 0.04
+
+Parity:
+python main.py --universe demo --max-stocks 20 --backtest-v2 \
+  --use-portfolio-allocator false --parity-check
+
+Optimization (small):
+python optimize.py --universe nasdaq --max-stocks 80 --grid-size-limit 40 --symbols-seed 42
+
+──────────────────────────────────────────────────────────────────────────────
+IMPORTANT CONSTRAINTS
+──────────────────────────────────────────────────────────────────────────────
+- NO lookahead
+- Allocation uses only data available before entry
+- Scaling must preserve relative conviction
+- Hard cutoffs must be deterministic
+
+END TASK 20

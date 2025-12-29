@@ -189,6 +189,15 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
         'max_risk_fraction_per_trade': [0.015, 0.02],
     }
     
+    portfolio_allocator_params = {
+        'use_portfolio_allocator': [True],
+        'daily_risk_budget': [0.03, 0.04, 0.05],
+        'daily_risk_budget_forming': [0.01, 0.015, 0.02],
+        'max_signals_per_day': [None, 3, 5],
+        'allocation_scaling_mode': ['PROPORTIONAL'],
+        'min_allocation_scale': [0.25, 0.40],
+    }
+    
     all_base_params = {}
     all_base_params.update(detection_params)
     all_base_params.update(portfolio_params)
@@ -196,6 +205,7 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
     all_base_params.update(confirmed_exit_params)
     all_base_params.update(scoring_params)
     all_base_params.update(score_risk_params)
+    all_base_params.update(portfolio_allocator_params)
     
     grid = []
     for _ in range(grid_size_limit * 2):
@@ -341,6 +351,26 @@ def params_to_backtest_config(params: Dict[str, Any], base_cfg: BacktestConfig) 
         updates['score_risk_missing_policy'] = params['score_risk_missing_policy']
     if 'max_risk_fraction_per_trade' in params:
         updates['max_risk_fraction_per_trade'] = params['max_risk_fraction_per_trade']
+    
+    # Portfolio allocation params (Task 20)
+    if 'use_portfolio_allocator' in params:
+        updates['use_portfolio_allocator'] = params['use_portfolio_allocator']
+    if 'daily_risk_budget' in params:
+        updates['daily_risk_budget'] = params['daily_risk_budget']
+    if 'weekly_risk_budget' in params:
+        updates['weekly_risk_budget'] = params['weekly_risk_budget']
+    if 'daily_risk_budget_forming' in params:
+        updates['daily_risk_budget_forming'] = params['daily_risk_budget_forming']
+    if 'daily_risk_budget_confirmed' in params:
+        updates['daily_risk_budget_confirmed'] = params['daily_risk_budget_confirmed']
+    if 'allocation_rank_metric' in params:
+        updates['allocation_rank_metric'] = params['allocation_rank_metric']
+    if 'max_signals_per_day' in params:
+        updates['max_signals_per_day'] = params['max_signals_per_day']
+    if 'allocation_scaling_mode' in params:
+        updates['allocation_scaling_mode'] = params['allocation_scaling_mode']
+    if 'min_allocation_scale' in params:
+        updates['min_allocation_scale'] = params['min_allocation_scale']
     
     if updates:
         return replace(base_cfg, **updates)
@@ -1213,6 +1243,18 @@ def build_strategy_config(
             'apply_to': best_params.get('score_risk_apply_to', 'BOTH'),
             'missing_policy': best_params.get('score_risk_missing_policy', 'NEUTRAL'),
             'max_risk_fraction_per_trade': best_params.get('max_risk_fraction_per_trade', 0.02),
+        },
+        
+        'portfolio_allocator': {
+            'enabled': best_params.get('use_portfolio_allocator', True),
+            'daily_risk_budget': best_params.get('daily_risk_budget', 0.04),
+            'weekly_risk_budget': best_params.get('weekly_risk_budget', None),
+            'daily_risk_budget_forming': best_params.get('daily_risk_budget_forming', 0.015),
+            'daily_risk_budget_confirmed': best_params.get('daily_risk_budget_confirmed', None),
+            'allocation_rank_metric': best_params.get('allocation_rank_metric', 'score_weighted'),
+            'max_signals_per_day': best_params.get('max_signals_per_day', None),
+            'allocation_scaling_mode': best_params.get('allocation_scaling_mode', 'PROPORTIONAL'),
+            'min_allocation_scale': best_params.get('min_allocation_scale', 0.25),
         },
         
         'liquidity': {

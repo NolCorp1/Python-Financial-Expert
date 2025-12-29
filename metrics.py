@@ -857,6 +857,127 @@ def compute_threshold_performance(
     return pd.DataFrame(results)
 
 
+def compute_capital_efficiency_metrics(trades_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Compute capital efficiency metrics from trades with allocation data.
+    
+    Args:
+        trades_df: DataFrame with trades including allocation_score, allocation_scale columns
+    
+    Returns:
+        Dict with capital efficiency metrics:
+        - avg_allocation_scale: average scaling factor applied
+        - pct_trades_scaled_down: percentage of trades that were scaled down
+        - return_per_allocated_risk: total return divided by total risk allocated
+        - capital_concentration_top20_pct: PnL from top 20% scored trades
+        - capital_concentration_top40_pct: PnL from top 40% scored trades
+    """
+    result = {
+        'avg_allocation_scale': 1.0,
+        'pct_trades_scaled_down': 0.0,
+        'return_per_allocated_risk': 0.0,
+        'capital_concentration_top20_pct': 0.0,
+        'capital_concentration_top40_pct': 0.0,
+        'avg_allocation_score': 0.0,
+        'total_allocation_budget_used': 0.0,
+    }
+    
+    if trades_df.empty:
+        return result
+    
+    # Check if allocation columns exist
+    if 'allocation_scale' not in trades_df.columns:
+        return result
+    
+    # Average allocation scale
+    result['avg_allocation_scale'] = round(trades_df['allocation_scale'].mean(), 4)
+    
+    # Percentage of trades scaled down
+    scaled_down = trades_df['allocation_scale'] < 1.0
+    result['pct_trades_scaled_down'] = round(100.0 * scaled_down.sum() / len(trades_df), 2)
+    
+    # Average allocation score
+    if 'allocation_score' in trades_df.columns:
+        result['avg_allocation_score'] = round(trades_df['allocation_score'].mean(), 4)
+    
+    # Total allocation budget used
+    if 'allocation_budget_used' in trades_df.columns:
+        result['total_allocation_budget_used'] = round(trades_df['allocation_budget_used'].sum(), 6)
+    
+    # Return per allocated risk
+    if 'pnl_dollars' in trades_df.columns and 'risk_fraction_applied' in trades_df.columns:
+        total_pnl = trades_df['pnl_dollars'].sum()
+        total_risk = trades_df['risk_fraction_applied'].sum()
+        if total_risk > 0:
+            result['return_per_allocated_risk'] = round(total_pnl / (total_risk * 100000), 4)  # Normalize
+    
+    # Capital concentration in top score deciles
+    if 'allocation_score' in trades_df.columns and 'pnl_dollars' in trades_df.columns:
+        df_sorted = trades_df.sort_values('allocation_score', ascending=False)
+        total_pnl = trades_df['pnl_dollars'].sum()
+        
+        if abs(total_pnl) > 0.01:  # Avoid division by zero
+            n = len(df_sorted)
+            top20_n = max(1, int(n * 0.2))
+            top40_n = max(1, int(n * 0.4))
+            
+            top20_pnl = df_sorted.head(top20_n)['pnl_dollars'].sum()
+            top40_pnl = df_sorted.head(top40_n)['pnl_dollars'].sum()
+            
+            result['capital_concentration_top20_pct'] = round(100.0 * top20_pnl / total_pnl, 2) if total_pnl != 0 else 0.0
+            result['capital_concentration_top40_pct'] = round(100.0 * top40_pnl / total_pnl, 2) if total_pnl != 0 else 0.0
+    
+    return result
+
+
+def compute_allocation_bucket_report(trades_df: pd.DataFrame, n_buckets: int = 10) -> pd.DataFrame:
+    """
+    Generate report by allocation_score decile buckets.
+    
+    Args:
+        trades_df: DataFrame with trades including allocation_score column
+        n_buckets: Number of buckets to divide scores into (default 10)
+    
+    Returns:
+        DataFrame with per-bucket statistics
+    """
+    if trades_df.empty or 'allocation_score' not in trades_df.columns:
+        return pd.DataFrame()
+    
+    df = trades_df.copy()
+    
+    # Create score buckets
+    df['alloc_bucket'] = pd.qcut(
+        df['allocation_score'], 
+        q=n_buckets, 
+        labels=[f"{i+1}" for i in range(n_buckets)],
+        duplicates='drop'
+    )
+    
+    results = []
+    for bucket in sorted(df['alloc_bucket'].unique()):
+        bucket_df = df[df['alloc_bucket'] == bucket]
+        n_trades = len(bucket_df)
+        
+        avg_score = bucket_df['allocation_score'].mean()
+        avg_scale = bucket_df['allocation_scale'].mean() if 'allocation_scale' in bucket_df.columns else 1.0
+        total_pnl = bucket_df['pnl_dollars'].sum() if 'pnl_dollars' in bucket_df.columns else 0
+        avg_r = bucket_df['pnl_r_multiple'].mean() if 'pnl_r_multiple' in bucket_df.columns else 0
+        win_rate = 100.0 * (bucket_df['pnl_dollars'] > 0).sum() / n_trades if n_trades > 0 else 0
+        
+        results.append({
+            'bucket': bucket,
+            'n_trades': n_trades,
+            'avg_allocation_score': round(avg_score, 4),
+            'avg_allocation_scale': round(avg_scale, 4),
+            'total_pnl': round(total_pnl, 2),
+            'avg_r': round(avg_r, 3),
+            'win_rate': round(win_rate, 2),
+        })
+    
+    return pd.DataFrame(results)
+
+
 def check_score_monotonicity(bucket_df: pd.DataFrame) -> Dict[str, Any]:
     """
     Check if score buckets show expected monotonicity (higher scores -> better performance).
