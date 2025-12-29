@@ -1,0 +1,210 @@
+TASK 19 — Score-Based Risk Scaling (Pattern Quality → Position Size)
+
+Goal
+Add an optional “score-based risk scaling” layer so higher-quality double-bottom patterns take larger size and low-quality patterns take smaller size — without adding lookahead. This leverages the Pattern Quality Scoring you already built (Task 15–17) to improve profitability + reduce tail risk.
+
+Why this matters
+Right now, once a signal passes filters, its position size is mostly determined by entry_kind (FORMING/CONFIRMED) + regime multipliers. But your own diagnostics show not all patterns are equal — score deciles behave differently. This task makes the system *capital allocate* based on that information.
+
+High-level behavior
+- Compute a score multiplier from pattern_score ∈ [0, 100]
+- Apply it to the per-trade risk fraction BEFORE share sizing
+- Clamp sizing so it can’t go crazy
+- Keep everything deterministic + no-lookahead (score is computed pre-entry)
+
+Default multiplier function (smooth + intuitive)
+Let s = clamp(pattern_score / 100, 0, 1)
+score_mult = score_risk_min_mult + (score_risk_max_mult - score_risk_min_mult) * (s ** score_risk_alpha)
+
+Examples with defaults min=0.6, max=1.2, alpha=1.0:
+- score 0  → 0.60x risk
+- score 50 → 0.90x risk
+- score 100→ 1.20x risk
+
+Files to edit
+- backtester.py
+- main.py
+- optimize.py (walk-forward grid + best config)
+- replit.md (document flags)
+
+──────────────────────────────────────────────────────────────────────────────
+1) backtester.py — Add config fields + apply score sizing
+──────────────────────────────────────────────────────────────────────────────
+
+A) Extend BacktestConfig
+Find the BacktestConfig dataclass and add these fields (near other risk/regime fields):
+
+    # Score-based risk scaling
+    use_score_risk_scaling: bool = True
+    score_risk_alpha: float = 1.0
+    score_risk_min_mult: float = 0.60
+    score_risk_max_mult: float = 1.20
+    score_risk_apply_to: str = "BOTH"  # BOTH / FORMING / CONFIRMED
+    score_risk_missing_policy: str = "NEUTRAL"  # NEUTRAL / MIN
+
+Optional safety cap (recommended):
+    max_risk_fraction_per_trade: float = 0.02  # absolute cap after all multipliers
+
+B) Add helper function
+Somewhere near other helpers (top-level), add:
+
+def compute_score_risk_mult(
+    pattern_score: float | None,
+    alpha: float,
+    min_mult: float,
+    max_mult: float,
+    missing_policy: str = "NEUTRAL",
+) -> float:
+    """
+    Convert pattern_score [0,100] into a smooth risk multiplier in [min_mult, max_mult].
+    No-lookahead safe: uses only pre-entry score.
+    """
+    if pattern_score is None:
+        return 1.0 if missing_policy.upper() == "NEUTRAL" else float(min_mult)
+
+    try:
+        s = float(pattern_score)
+    except Exception:
+        return 1.0 if missing_policy.upper() == "NEUTRAL" else float(min_mult)
+
+    s = max(0.0, min(100.0, s)) / 100.0
+    shaped = s ** float(alpha)
+    return float(min_mult) + (float(max_mult) - float(min_mult)) * shaped
+
+C) Apply multiplier in entry sizing logic
+In run_backtest(), find the “risk_fraction = …” block (where you set risk_fraction for CONFIRMED vs FORMING, then apply regime multipliers).
+
+Right after regime_risk_mult is computed/applied, add:
+
+    # Score-based risk scaling (optional)
+    score_mult = 1.0
+    if cfg.use_score_risk_scaling:
+        apply_to = (cfg.score_risk_apply_to or "BOTH").upper()
+        kind = entry_kind.upper()
+        should_apply = (
+            apply_to == "BOTH"
+            or (apply_to == "FORMING" and kind == "FORMING")
+            or (apply_to == "CONFIRMED" and kind == "CONFIRMED")
+        )
+        if should_apply:
+            pattern_score = None
+            if signal.meta:
+                # pattern_score should already be attached by strategy (Task 15)
+                pattern_score = signal.meta.get("pattern_score", None)
+            score_mult = compute_score_risk_mult(
+                pattern_score=pattern_score,
+                alpha=cfg.score_risk_alpha,
+                min_mult=cfg.score_risk_min_mult,
+                max_mult=cfg.score_risk_max_mult,
+                missing_policy=cfg.score_risk_missing_policy,
+            )
+            risk_fraction *= score_mult
+
+    # Absolute cap after all multipliers
+    if getattr(cfg, "max_risk_fraction_per_trade", None) is not None:
+        risk_fraction = min(risk_fraction, cfg.max_risk_fraction_per_trade)
+
+Then, when you build the OpenPosition/meta, store these so you can audit later:
+
+    if signal.meta is None:
+        signal.meta = {}
+    signal.meta["risk_fraction_applied"] = float(risk_fraction)
+    signal.meta["score_risk_mult"] = float(score_mult)
+    signal.meta["regime_risk_mult"] = float(regime_risk_mult)
+
+(If you already copy meta into pos.meta, you’re done; otherwise ensure pos.meta includes these keys.)
+
+D) Add columns to trades output
+In close_position(), you already output pattern_score and score_* feature columns.
+Add:
+
+    'risk_fraction_applied': round(pos.meta.get('risk_fraction_applied', 0.0), 6) if pos.meta else 0.0,
+    'score_risk_mult': round(pos.meta.get('score_risk_mult', 1.0), 4) if pos.meta else 1.0,
+    'regime_risk_mult': round(pos.meta.get('regime_risk_mult', 1.0), 4) if pos.meta else 1.0,
+
+This makes it easy to analyze whether the sizing is doing what you expect.
+
+──────────────────────────────────────────────────────────────────────────────
+2) main.py — CLI flags + config wiring
+──────────────────────────────────────────────────────────────────────────────
+
+A) Add CLI flags
+Add arguments (near other backtest/portfolio/regime args):
+
+--use-score-risk-scaling true/false (default true)
+--score-risk-alpha 1.0
+--score-risk-min-mult 0.60
+--score-risk-max-mult 1.20
+--score-risk-apply-to BOTH|FORMING|CONFIRMED
+--score-risk-missing-policy NEUTRAL|MIN
+--max-risk-fraction-per-trade 0.02
+
+B) When building BacktestConfig from args/config JSON
+Make sure these fields are passed through.
+Also: when using --config outputs/strategy_best_config.json, ensure these fields can be loaded from config and override defaults (same pattern you use for other tuned params).
+
+C) Print a banner summary
+When backtest starts, print something like:
+Score risk scaling: ON | apply_to=BOTH | alpha=1.0 | min=0.60 | max=1.20 | cap=0.02
+
+──────────────────────────────────────────────────────────────────────────────
+3) optimize.py — include score sizing in walk-forward optimization
+──────────────────────────────────────────────────────────────────────────────
+
+A) Add score sizing fields to the param grid (small + safe)
+Add only a few options to avoid grid explosion:
+
+- use_score_risk_scaling: [True]  # keep on during tuning
+- score_risk_alpha: [0.8, 1.0, 1.4]
+- score_risk_min_mult: [0.6, 0.7]
+- score_risk_max_mult: [1.1, 1.2, 1.3]
+- score_risk_apply_to: ["BOTH", "FORMING"]  # start with these two
+- max_risk_fraction_per_trade: [0.015, 0.02]
+
+Keep missing_policy fixed = "NEUTRAL" for now.
+
+B) Ensure best config includes these fields
+Where you write outputs/strategy_best_config.json, ensure these params are included.
+Also ensure --validate-best produces the same scoring reports and the config file used in validation includes these sizing knobs.
+
+C) Update selection summary
+In your scoring policy WF summary output, include the average chosen score_risk_* fields and how often each won.
+
+──────────────────────────────────────────────────────────────────────────────
+4) replit.md — document it
+──────────────────────────────────────────────────────────────────────────────
+Add a section:
+“Score-Based Risk Scaling”
+- what it does
+- recommended defaults
+- example CLI usage
+- how to disable it for parity testing
+
+Example usage
+python main.py --config outputs/strategy_best_config.json --universe nasdaq --max-stocks 200 --backtest-v2 \
+  --use-score-risk-scaling true --score-risk-alpha 1.0 --score-risk-min-mult 0.6 --score-risk-max-mult 1.2 \
+  --score-risk-apply-to BOTH --max-risk-fraction-per-trade 0.02
+
+──────────────────────────────────────────────────────────────────────────────
+Acceptance Criteria
+──────────────────────────────────────────────────────────────────────────────
+1) Backtest runs successfully (demo + nasdaq subset) with score sizing ON and OFF.
+2) trades.csv includes: risk_fraction_applied, score_risk_mult, regime_risk_mult columns populated.
+3) Parity check: when --use-score-risk-scaling false (and other knobs unchanged), results match the prior baseline within your existing parity tolerances.
+4) Walk-forward optimization can tune the score sizing knobs and saves them into strategy_best_config.json.
+5) Validation mode outputs still generate (bucket report, attribution report, summary JSON) and now include sizing knobs in manifests/config.
+
+Quick sanity tests
+- Demo:
+  python main.py --universe demo --max-stocks 20 --backtest-v2 --use-score-risk-scaling true
+- Parity:
+  python main.py --universe demo --max-stocks 20 --backtest-v2 --use-score-risk-scaling false --parity-check
+- Optimization small:
+  python optimize.py --universe nasdaq --max-stocks 80 --grid-size-limit 60 --symbols-seed 42
+
+Notes / Guardrails
+- This must NOT use any post-entry information. Only pattern_score computed before entry is allowed.
+- Clamp risk fraction to avoid accidental leverage creep when score + regime multipliers stack.
+- Store applied multipliers in meta/trades output so you can debug “why was this position so big/small?”
+
+END TASK 19

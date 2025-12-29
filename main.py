@@ -495,6 +495,24 @@ def main():
     parser.add_argument('--regime-highvol-confirmed-mult', type=float, default=0.85,
                        help='Risk multiplier for CONFIRMED in high vol (0.85 = 85%%)')
     
+    parser.add_argument('--use-score-risk-scaling', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Enable score-based risk scaling (higher score = larger position)')
+    parser.add_argument('--score-risk-alpha', type=float, default=1.0,
+                       help='Shape parameter for score->risk curve (1.0 = linear)')
+    parser.add_argument('--score-risk-min-mult', type=float, default=0.60,
+                       help='Min risk multiplier for score=0 (0.60 = 60%%)')
+    parser.add_argument('--score-risk-max-mult', type=float, default=1.20,
+                       help='Max risk multiplier for score=100 (1.20 = 120%%)')
+    parser.add_argument('--score-risk-apply-to', type=str, default='BOTH',
+                       choices=['BOTH', 'FORMING', 'CONFIRMED'],
+                       help='Apply score scaling to BOTH, FORMING, or CONFIRMED entries')
+    parser.add_argument('--score-risk-missing-policy', type=str, default='NEUTRAL',
+                       choices=['NEUTRAL', 'MIN'],
+                       help='Policy for missing scores: NEUTRAL (1.0x) or MIN (min_mult)')
+    parser.add_argument('--max-risk-fraction-per-trade', type=float, default=0.02,
+                       help='Absolute max risk fraction after all multipliers (safety cap)')
+    
     parser.add_argument('--symbols-seed', type=int, default=None,
                        help='Random seed for deterministic symbol subset selection')
     parser.add_argument('--parity-check', action='store_true',
@@ -642,6 +660,22 @@ def main():
             args.top_k_per_day = scoring['top_k_per_day']
         if scoring.get('trend_score_mode') is not None:
             args.trend_score_mode = scoring['trend_score_mode']
+        
+        score_risk = loaded_config.get('score_risk_scaling', {})
+        if score_risk.get('enabled') is not None:
+            args.use_score_risk_scaling = 'true' if score_risk['enabled'] else 'false'
+        if score_risk.get('alpha') is not None:
+            args.score_risk_alpha = score_risk['alpha']
+        if score_risk.get('min_mult') is not None:
+            args.score_risk_min_mult = score_risk['min_mult']
+        if score_risk.get('max_mult') is not None:
+            args.score_risk_max_mult = score_risk['max_mult']
+        if score_risk.get('apply_to') is not None:
+            args.score_risk_apply_to = score_risk['apply_to']
+        if score_risk.get('missing_policy') is not None:
+            args.score_risk_missing_policy = score_risk['missing_policy']
+        if score_risk.get('max_risk_fraction_per_trade') is not None:
+            args.max_risk_fraction_per_trade = score_risk['max_risk_fraction_per_trade']
         
         liq = loaded_config.get('liquidity', {})
         if liq.get('min_price') is not None:
@@ -965,8 +999,20 @@ def main():
             regime_soft_gate=args.regime_soft_gate.lower() == 'true',
             regime_downtrend_forming_risk_mult=args.regime_downtrend_forming_mult,
             regime_highvol_forming_risk_mult=args.regime_highvol_forming_mult,
-            regime_highvol_confirmed_risk_mult=args.regime_highvol_confirmed_mult
+            regime_highvol_confirmed_risk_mult=args.regime_highvol_confirmed_mult,
+            use_score_risk_scaling=args.use_score_risk_scaling.lower() == 'true',
+            score_risk_alpha=args.score_risk_alpha,
+            score_risk_min_mult=args.score_risk_min_mult,
+            score_risk_max_mult=args.score_risk_max_mult,
+            score_risk_apply_to=args.score_risk_apply_to.upper(),
+            score_risk_missing_policy=args.score_risk_missing_policy.upper(),
+            max_risk_fraction_per_trade=args.max_risk_fraction_per_trade
         )
+        
+        score_status = "ON" if cfg.use_score_risk_scaling else "OFF"
+        print(f"Score risk scaling: {score_status} | apply_to={cfg.score_risk_apply_to} | "
+              f"alpha={cfg.score_risk_alpha:.1f} | min={cfg.score_risk_min_mult:.2f} | "
+              f"max={cfg.score_risk_max_mult:.2f} | cap={cfg.max_risk_fraction_per_trade:.3f}")
         
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)
         

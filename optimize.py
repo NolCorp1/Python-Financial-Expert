@@ -180,12 +180,22 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
         'regime_highvol_confirmed_mult': [0.80, 0.90, 1.00],
     }
     
+    score_risk_params = {
+        'use_score_risk_scaling': [True],
+        'score_risk_alpha': [0.8, 1.0, 1.4],
+        'score_risk_min_mult': [0.6, 0.7],
+        'score_risk_max_mult': [1.1, 1.2, 1.3],
+        'score_risk_apply_to': ['BOTH', 'FORMING'],
+        'max_risk_fraction_per_trade': [0.015, 0.02],
+    }
+    
     all_base_params = {}
     all_base_params.update(detection_params)
     all_base_params.update(portfolio_params)
     all_base_params.update(forming_exit_params)
     all_base_params.update(confirmed_exit_params)
     all_base_params.update(scoring_params)
+    all_base_params.update(score_risk_params)
     
     grid = []
     for _ in range(grid_size_limit * 2):
@@ -316,6 +326,21 @@ def params_to_backtest_config(params: Dict[str, Any], base_cfg: BacktestConfig) 
             updates['regime_highvol_forming_risk_mult'] = params['regime_highvol_forming_mult']
         if 'regime_highvol_confirmed_mult' in params:
             updates['regime_highvol_confirmed_risk_mult'] = params['regime_highvol_confirmed_mult']
+    
+    if 'use_score_risk_scaling' in params:
+        updates['use_score_risk_scaling'] = params['use_score_risk_scaling']
+    if 'score_risk_alpha' in params:
+        updates['score_risk_alpha'] = params['score_risk_alpha']
+    if 'score_risk_min_mult' in params:
+        updates['score_risk_min_mult'] = params['score_risk_min_mult']
+    if 'score_risk_max_mult' in params:
+        updates['score_risk_max_mult'] = params['score_risk_max_mult']
+    if 'score_risk_apply_to' in params:
+        updates['score_risk_apply_to'] = params['score_risk_apply_to']
+    if 'score_risk_missing_policy' in params:
+        updates['score_risk_missing_policy'] = params['score_risk_missing_policy']
+    if 'max_risk_fraction_per_trade' in params:
+        updates['max_risk_fraction_per_trade'] = params['max_risk_fraction_per_trade']
     
     if updates:
         return replace(base_cfg, **updates)
@@ -1178,6 +1203,16 @@ def build_strategy_config(
             'top_k_per_day': best_params.get('top_k_per_day', 0),
             'top_k_per_week': best_params.get('top_k_per_week', 0),
             'trend_score_mode': best_params.get('trend_score_mode', 'NEUTRAL'),
+        },
+        
+        'score_risk_scaling': {
+            'enabled': best_params.get('use_score_risk_scaling', True),
+            'alpha': best_params.get('score_risk_alpha', 1.0),
+            'min_mult': best_params.get('score_risk_min_mult', 0.60),
+            'max_mult': best_params.get('score_risk_max_mult', 1.20),
+            'apply_to': best_params.get('score_risk_apply_to', 'BOTH'),
+            'missing_policy': best_params.get('score_risk_missing_policy', 'NEUTRAL'),
+            'max_risk_fraction_per_trade': best_params.get('max_risk_fraction_per_trade', 0.02),
         },
         
         'liquidity': {

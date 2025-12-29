@@ -95,6 +95,38 @@ class BacktestConfig:
     regime_downtrend_forming_risk_mult: float = 0.85
     regime_highvol_forming_risk_mult: float = 0.70
     regime_highvol_confirmed_risk_mult: float = 0.85
+    
+    use_score_risk_scaling: bool = True
+    score_risk_alpha: float = 1.0
+    score_risk_min_mult: float = 0.60
+    score_risk_max_mult: float = 1.20
+    score_risk_apply_to: str = "BOTH"
+    score_risk_missing_policy: str = "NEUTRAL"
+    max_risk_fraction_per_trade: float = 0.02
+
+
+def compute_score_risk_mult(
+    pattern_score: Optional[float],
+    alpha: float,
+    min_mult: float,
+    max_mult: float,
+    missing_policy: str = "NEUTRAL",
+) -> float:
+    """
+    Convert pattern_score [0,100] into a smooth risk multiplier in [min_mult, max_mult].
+    No-lookahead safe: uses only pre-entry score.
+    """
+    if pattern_score is None:
+        return 1.0 if missing_policy.upper() == "NEUTRAL" else float(min_mult)
+
+    try:
+        s = float(pattern_score)
+    except Exception:
+        return 1.0 if missing_policy.upper() == "NEUTRAL" else float(min_mult)
+
+    s = max(0.0, min(100.0, s)) / 100.0
+    shaped = s ** float(alpha)
+    return float(min_mult) + (float(max_mult) - float(min_mult)) * shaped
 
 
 @dataclass
@@ -477,6 +509,9 @@ def run_backtest(
             'score_breakout': round(score_features.get('breakout_strength', 0), 4),
             'score_volume': round(score_features.get('volume', 0), 4),
             'score_trend': round(score_features.get('trend_context', 0), 4),
+            'risk_fraction_applied': round(pos.meta.get('risk_fraction_applied', 0.0), 6) if pos.meta else 0.0,
+            'score_risk_mult': round(pos.meta.get('score_risk_mult', 1.0), 4) if pos.meta else 1.0,
+            'regime_risk_mult': round(pos.meta.get('regime_risk_mult', 1.0), 4) if pos.meta else 1.0,
             'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
         }
     
@@ -739,6 +774,31 @@ def run_backtest(
             
             risk_fraction *= regime_risk_mult
             
+            score_mult = 1.0
+            if cfg.use_score_risk_scaling:
+                apply_to = (cfg.score_risk_apply_to or "BOTH").upper()
+                kind = signal.entry_kind.upper()
+                should_apply = (
+                    apply_to == "BOTH"
+                    or (apply_to == "FORMING" and kind == "FORMING")
+                    or (apply_to == "CONFIRMED" and kind == "CONFIRMED")
+                )
+                if should_apply:
+                    pattern_score = None
+                    if signal.meta:
+                        pattern_score = signal.meta.get("pattern_score", None)
+                    score_mult = compute_score_risk_mult(
+                        pattern_score=pattern_score,
+                        alpha=cfg.score_risk_alpha,
+                        min_mult=cfg.score_risk_min_mult,
+                        max_mult=cfg.score_risk_max_mult,
+                        missing_policy=cfg.score_risk_missing_policy,
+                    )
+                    risk_fraction *= score_mult
+            
+            if cfg.max_risk_fraction_per_trade is not None:
+                risk_fraction = min(risk_fraction, cfg.max_risk_fraction_per_trade)
+            
             risk_budget = risk_fraction * current_equity
             shares = int(math.floor(risk_budget / stop_dist))
             
@@ -758,6 +818,11 @@ def run_backtest(
             entry_commission = cfg.commission_per_trade
             cash -= (entry_fill * shares + entry_commission)
             
+            pos_meta = signal.meta.copy() if signal.meta else {}
+            pos_meta["risk_fraction_applied"] = float(risk_fraction)
+            pos_meta["score_risk_mult"] = float(score_mult)
+            pos_meta["regime_risk_mult"] = float(regime_risk_mult)
+            
             position = OpenPosition(
                 symbol=sym,
                 pattern_id=signal.pattern_id,
@@ -770,7 +835,7 @@ def run_backtest(
                 shares=shares,
                 entry_commission=entry_commission,
                 slippage_bps=cfg.slippage_bps,
-                meta=signal.meta if hasattr(signal, 'meta') else {},
+                meta=pos_meta,
                 shares_initial=shares,
                 shares_remaining=shares
             )

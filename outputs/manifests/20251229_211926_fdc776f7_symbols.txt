@@ -1,0 +1,15 @@
+# Symbols for run: 20251229_211926_fdc776f7
+# Generated: 2025-12-29T21:19:29.332868
+# Mode: backtest
+# Count: 10
+
+AAPL
+ADBE
+AMAT
+AMD
+AMZN
+AVGO
+CRM
+CSCO
+GOOGL
+INTC
