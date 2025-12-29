@@ -2008,6 +2008,90 @@ def run_validation(args):
         json.dump(validation_summary, f, indent=2, default=str)
     print("Saved: outputs/validation_summary.json")
     
+    recycling_config = config.get('recycling', {})
+    if recycling_config.get('use_capital_recycling', False):
+        print("\n" + "=" * 60)
+        print("RECYCLING STRESS TEST VALIDATION")
+        print("=" * 60)
+        
+        from metrics import compute_recycling_effectiveness_metrics
+        from backtester import run_backtest_v2
+        
+        backtest_cfg = BacktestConfig(
+            initial_capital=portfolio_config.get('initial_capital', 100000),
+            risk_fraction_per_trade=portfolio_config.get('risk_fraction_confirmed', 0.01),
+            max_positions=portfolio_config.get('max_positions_total', 10),
+            one_position_per_symbol=True,
+            slippage_bps=portfolio_config.get('slippage_bps', 5.0),
+            commission_per_trade=portfolio_config.get('commission_per_trade', 1.0),
+            use_capital_recycling=True,
+            recycle_action=recycling_config.get('recycle_action', 'PARTIAL'),
+            recycle_trigger_mode=recycling_config.get('recycle_trigger_mode', 'BUDGET_BLOCKED'),
+            recycle_min_score_gap=recycling_config.get('recycle_min_score_gap', 0.15),
+            recycle_min_hold_days=recycling_config.get('recycle_min_hold_days', 10),
+            recycle_partial_fraction=recycling_config.get('recycle_partial_fraction', 0.50),
+            recycling_stress_mode='LOW_BUDGET',
+            recycling_stress_daily_budget_mult=0.50,
+        )
+        
+        all_signals = []
+        for symbol, df in price_data.items():
+            if symbol in ['QQQ', 'SPY']:
+                continue
+            patterns = detect_double_bottom(df, detection_cfg)
+            if patterns:
+                signals = generate_signals(
+                    df=df,
+                    patterns=patterns,
+                    stop_loss_buffer=detection_cfg.get('stop_loss_buffer', 0.02),
+                    price_tolerance=detection_cfg.get('low_tolerance', 0.04),
+                    min_peak_height=detection_cfg.get('neckline_min_rise', 0.06),
+                    score_policy=scoring_config.get('score_policy', 'RAW'),
+                    trend_mode=scoring_config.get('trend_score_mode', 'NEUTRAL'),
+                    min_pattern_score=scoring_config.get('min_pattern_score', 0),
+                    top_k_per_day=0,
+                    top_k_per_week=0
+                )
+                for sig in signals:
+                    sig.symbol = symbol
+                all_signals.extend(signals)
+        
+        if all_signals:
+            signals_by_symbol = group_signals_by_symbol(all_signals)
+            stress_trades_df, _ = run_backtest_v2(signals_by_symbol, price_data, backtest_cfg)
+            
+            if not stress_trades_df.empty:
+                recycling_eff = compute_recycling_effectiveness_metrics(stress_trades_df)
+                
+                print(f"Stress test trades: {len(stress_trades_df)}")
+                print(f"Recycle events: {recycling_eff['recycle_events_count']}")
+                print(f"Avg swap edge (R): {recycling_eff['avg_swap_edge_r']:+.3f}")
+                print(f"False recycle rate: {recycling_eff['false_recycle_rate']:.1f}%")
+                
+                recycling_warnings = []
+                if recycling_eff['false_recycle_rate'] > 40:
+                    recycling_warnings.append(f"High false recycle rate: {recycling_eff['false_recycle_rate']:.1f}% > 40%")
+                if recycling_eff['avg_swap_edge_r'] < 0:
+                    recycling_warnings.append(f"Negative swap edge: {recycling_eff['avg_swap_edge_r']:.3f}R < 0")
+                
+                if recycling_warnings:
+                    print("\n*** RECYCLING VALIDATION WARNINGS ***")
+                    for w in recycling_warnings:
+                        print(f"  - {w}")
+                    print("Consider disabling recycling or adjusting parameters.")
+                else:
+                    print("Recycling stress test PASSED - no rejection criteria triggered.")
+                
+                validation_summary['recycling_stress_test'] = {
+                    'recycle_events': recycling_eff['recycle_events_count'],
+                    'avg_swap_edge_r': recycling_eff['avg_swap_edge_r'],
+                    'false_recycle_rate': recycling_eff['false_recycle_rate'],
+                    'warnings': recycling_warnings,
+                }
+                
+                with open('outputs/validation_summary.json', 'w') as f:
+                    json.dump(validation_summary, f, indent=2, default=str)
+    
     print("\n" + "=" * 60)
     print("VALIDATION COMPLETE!")
     print("=" * 60)
