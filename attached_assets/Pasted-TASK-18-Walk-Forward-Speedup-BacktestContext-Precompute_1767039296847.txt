@@ -1,0 +1,229 @@
+TASK 18 — Walk-Forward Speedup: BacktestContext Precompute + Corr/Cluster Cache (no behavior change)
+
+GOAL
+Reduce optimize.py runtime from ~8–9s per parameter combo to ~2–4s per combo by:
+- Precomputing window-invariant backtest inputs once (ATR series, returns matrix, master date calendar, regime DF)
+- Reusing them across all parameter combinations in that window
+- Caching corr/cluster computation by cutoff date (first_signal_date) so repeated cutoffs don’t recompute
+
+WHY THIS MATTERS
+Your optimize loop calls run_scan_and_backtest() for every params combo.
+run_scan_and_backtest() calls run_backtest(), and run_backtest() currently recomputes:
+- ATR for every symbol
+- returns_df (pct_change) for every symbol
+- all_dates union calendar
+- regime_df (QQQ/SPY indicators)
+- corr/clusters (often)
+…for every combo.
+That’s the primary reason you’re stuck at ~8–9s/it and timing out mid-grid.
+
+SCOPE (FILES)
+- backtester.py (or backtester 2.py in your repo): add BacktestContext + builder + caching; update run_backtest() to accept ctx
+- optimize.py: build ctx once per window for train/test and pass it into run_scan_and_backtest()
+- (optional) main.py: when running --backtest-v2, build ctx once and pass to run_backtest() for consistency/clean design
+
+----------------------------------------------------------------------------------------------------
+PART A — backtester.py: Add BacktestContext + builder + use it in run_backtest
+----------------------------------------------------------------------------------------------------
+
+1) Add imports at top (if missing):
+- from dataclasses import dataclass, field
+- from typing import Optional, Tuple
+
+2) Create a dataclass near the top of backtester.py (above run_backtest):
+
+@dataclass
+class BacktestContext:
+    """
+    Precomputed, window-invariant backtest artifacts.
+    Safe to reuse across parameter combos as long as price_data_by_symbol and cfg.atr_length are unchanged.
+    """
+    atr_by_symbol: Dict[str, pd.Series]
+    returns_df: pd.DataFrame
+    all_dates: List[pd.Timestamp]
+    regime_df: Optional[pd.DataFrame] = None
+
+    # Cache for (cutoff_date, lookback_days, n_clusters) -> (corr_matrix, clusters)
+    corr_cluster_cache: Dict[Tuple[pd.Timestamp, int, int], Tuple[pd.DataFrame, Dict[str, int]]] = field(default_factory=dict)
+
+3) Add a builder function (place above run_backtest):
+
+def build_backtest_context(
+    price_data_by_symbol: Dict[str, pd.DataFrame],
+    cfg: BacktestConfig
+) -> BacktestContext:
+    # ATR precompute
+    atr_by_symbol: Dict[str, pd.Series] = {}
+    for sym, df in price_data_by_symbol.items():
+        atr_by_symbol[sym] = compute_atr(df, cfg.atr_length)
+
+    # Returns matrix precompute (used for corr/cluster caps)
+    returns_df = compute_returns_matrix(price_data_by_symbol)
+
+    # Master calendar precompute
+    all_dates_set = set()
+    for df in price_data_by_symbol.values():
+        all_dates_set.update(df.index.tolist())
+    all_dates = sorted(all_dates_set)
+
+    # Regime DF precompute (if enabled + available)
+    regime_df = None
+    if cfg.use_regime_filter and cfg.regime_symbol in price_data_by_symbol:
+        df_regime = price_data_by_symbol[cfg.regime_symbol]
+        if len(df_regime) > 0:
+            regime_df = compute_regime(df_regime, cfg)
+
+    return BacktestContext(
+        atr_by_symbol=atr_by_symbol,
+        returns_df=returns_df,
+        all_dates=all_dates,
+        regime_df=regime_df
+    )
+
+4) Update run_backtest signature to accept ctx:
+
+def run_backtest(
+    signals_by_symbol: Dict[str, List[TradeSignal]],
+    price_data_by_symbol: Dict[str, pd.DataFrame],
+    cfg: BacktestConfig,
+    ctx: Optional[BacktestContext] = None
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+5) At the start of run_backtest, build ctx if None:
+
+if ctx is None:
+    ctx = build_backtest_context(price_data_by_symbol, cfg)
+
+Then REPLACE the current internal precomputations with ctx usage:
+
+- Remove/reduce:
+  atr_by_symbol = {... compute_atr ...}
+  all_dates = set(); all_dates = sorted(...)
+  regime_df = compute_regime(...)
+  returns_df = compute_returns_matrix(...)
+
+- Replace with:
+  atr_by_symbol = ctx.atr_by_symbol
+  all_dates = ctx.all_dates
+  regime_df = ctx.regime_df
+  returns_df = ctx.returns_df
+
+6) Update corr/cluster computation block to use ctx cache
+Locate the block inside run_backtest that currently does:
+- returns_df = compute_returns_matrix(...)
+- returns_before_signal = returns_df[returns_df.index < first_signal_date]
+- corr_matrix, clusters = compute_symbol_correlation_and_clusters(...)
+
+Replace with:
+
+corr_matrix = None
+clusters = {}
+
+if (cfg.use_correlation_caps or cfg.use_cluster_caps) and all_signals and len(returns_df) > 0:
+    first_signal_date = all_signals[0].entry_date
+    cache_key = (first_signal_date, cfg.corr_lookback_days, cfg.n_clusters)
+
+    if cache_key in ctx.corr_cluster_cache:
+        corr_matrix, clusters = ctx.corr_cluster_cache[cache_key]
+    else:
+        returns_before_signal = returns_df[returns_df.index < first_signal_date]
+        if len(returns_before_signal) >= cfg.corr_lookback_days * 0.5:
+            corr_matrix, clusters = compute_symbol_correlation_and_clusters(
+                returns_before_signal,
+                cfg.corr_lookback_days,
+                cfg.n_clusters
+            )
+        else:
+            # Insufficient history -> behave exactly like today (caps effectively disabled downstream)
+            corr_matrix, clusters = pd.DataFrame(), {}
+        ctx.corr_cluster_cache[cache_key] = (corr_matrix, clusters)
+
+NOTE: This keeps behavior consistent with your current “before first signal” no-lookahead approach,
+but avoids recomputing returns_df and repeats of corr/clustering for identical first_signal_date values.
+
+7) Ensure trailing stop uses atr_by_symbol from ctx
+Wherever you reference ATR, ensure it uses:
+atr_series = atr_by_symbol.get(sym)
+(no change other than atr_by_symbol now coming from ctx)
+
+----------------------------------------------------------------------------------------------------
+PART B — optimize.py: Build ctx once per window and reuse for every combo
+----------------------------------------------------------------------------------------------------
+
+1) Import builder + BacktestContext (where you import run_backtest):
+from backtester import run_backtest, BacktestConfig, build_backtest_context, BacktestContext
+
+2) Update run_scan_and_backtest signature to accept ctx:
+
+def run_scan_and_backtest(
+    price_data: Dict[str, pd.DataFrame],
+    params: Dict[str, Any],
+    backtest_cfg: BacktestConfig,
+    ctx: Optional[BacktestContext] = None
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+3) Pass ctx into run_backtest call:
+
+trades_df, equity_df = run_backtest(signals_by_symbol, price_data, backtest_cfg, ctx=ctx)
+
+4) In run_window_optimization(), after slicing train_data/test_data, precompute contexts ONCE:
+
+train_data = slice_price_data(...)
+test_data  = slice_price_data(...)
+
+train_ctx = build_backtest_context(train_data, backtest_cfg)
+test_ctx  = build_backtest_context(test_data,  backtest_cfg)
+
+5) Update the grid loop to reuse train_ctx:
+
+for params in iterator:
+    trades_df, equity_df = run_scan_and_backtest(train_data, params, backtest_cfg, ctx=train_ctx)
+    ...
+
+6) Update the final test evaluation to reuse test_ctx:
+
+test_trades, test_equity = run_scan_and_backtest(test_data, best_params, backtest_cfg, ctx=test_ctx)
+
+----------------------------------------------------------------------------------------------------
+PART C (OPTIONAL) — main.py: Use ctx for single backtests too
+----------------------------------------------------------------------------------------------------
+This won’t change runtime much for one-off backtests, but it keeps the design consistent.
+
+Where main.py runs:
+trades_df, equity_df = run_backtest(signals_by_symbol, price_data, cfg)
+
+Change to:
+ctx = build_backtest_context(price_data, cfg)
+trades_df, equity_df = run_backtest(signals_by_symbol, price_data, cfg, ctx=ctx)
+
+----------------------------------------------------------------------------------------------------
+ACCEPTANCE CRITERIA
+1) optimize.py completes 100 combos on ~200 symbols without timing out (same command you used)
+2) Runtime per combo improves materially:
+   - Before: ~8–9s/it (from your run output)
+   - After: target ~2–4s/it on the same universe/grid size
+3) No behavior changes:
+   - Same trades_df + equity_df for a fixed seed/config when running a single backtest
+   - Parity-check still passes for main.py backtests
+
+HOW TO TEST (FAST)
+1) Small sanity:
+python optimize.py --universe nasdaq --max-stocks 80 --grid-size-limit 30 --symbols-seed 42
+
+2) Re-run your heavier test:
+python optimize.py --universe nasdaq --max-stocks 300 \
+  --train-bars 504 --test-bars 126 --step-bars 126 \
+  --objective composite --grid-size-limit 250 \
+  --min-trades-test 20 --min-exposure-days-test 20 \
+  --symbols-seed 42
+
+EXPECTED
+- You should see the tqdm “s/it” number drop significantly compared to the previous log.
+
+NOTES / GUARANTEES
+- No-lookahead preserved: corr/clusters still use returns strictly before first_signal_date (same as now)
+- This change is performance-only: you’re reusing identical precomputed ATR/returns/calendar/regime per window
+
+DONE WHEN
+- The 300-stock optimization progresses well past 63/100 without timing out
+- And the best config outputs still load correctly via: python main.py --config outputs/strategy_best_config.json
