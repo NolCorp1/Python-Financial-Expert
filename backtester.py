@@ -282,11 +282,71 @@ def compute_symbol_correlation_and_clusters(
     return corr_matrix, clusters
 
 
+@dataclass
+class BacktestContext:
+    """
+    Precomputed, window-invariant backtest artifacts.
+    Safe to reuse across parameter combos as long as price_data_by_symbol 
+    and cfg.atr_length are unchanged.
+    """
+    atr_by_symbol: Dict[str, pd.Series]
+    returns_df: pd.DataFrame
+    all_dates: List[pd.Timestamp]
+    regime_df: Optional[pd.DataFrame] = None
+    corr_cluster_cache: Dict[Tuple[pd.Timestamp, int, int], Tuple[pd.DataFrame, Dict[str, int]]] = field(default_factory=dict)
+
+
+def build_backtest_context(
+    price_data_by_symbol: Dict[str, pd.DataFrame],
+    cfg: BacktestConfig
+) -> BacktestContext:
+    """
+    Build precomputed backtest context for reuse across parameter combos.
+    
+    Precomputes:
+    - ATR series for all symbols
+    - Returns matrix for correlation/cluster computation
+    - Master date calendar
+    - Regime DataFrame (if enabled and regime symbol available)
+    
+    Args:
+        price_data_by_symbol: Dict mapping symbol to OHLCV DataFrame
+        cfg: BacktestConfig with parameters (atr_length, regime settings)
+        
+    Returns:
+        BacktestContext with precomputed artifacts
+    """
+    atr_by_symbol: Dict[str, pd.Series] = {}
+    for sym, df in price_data_by_symbol.items():
+        atr_by_symbol[sym] = compute_atr(df, cfg.atr_length)
+    
+    returns_df = compute_returns_matrix(price_data_by_symbol)
+    
+    all_dates_set: set = set()
+    for df in price_data_by_symbol.values():
+        all_dates_set.update(df.index.tolist())
+    all_dates = sorted(all_dates_set)
+    
+    regime_df = None
+    if cfg.use_regime_filter and cfg.regime_symbol in price_data_by_symbol:
+        df_regime = price_data_by_symbol[cfg.regime_symbol]
+        if len(df_regime) > 0:
+            regime_df = compute_regime(df_regime, cfg)
+    
+    return BacktestContext(
+        atr_by_symbol=atr_by_symbol,
+        returns_df=returns_df,
+        all_dates=all_dates,
+        regime_df=regime_df
+    )
+
+
 def run_backtest(
     signals_by_symbol: Dict[str, List[TradeSignal]],
     price_data_by_symbol: Dict[str, pd.DataFrame],
     cfg: BacktestConfig,
-    return_diagnostics: bool = False
+    return_diagnostics: bool = False,
+    ctx: Optional['BacktestContext'] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run no-lookahead backtest simulation with portfolio rules engine.
@@ -296,12 +356,21 @@ def run_backtest(
         price_data_by_symbol: Dict mapping symbol to OHLCV DataFrame
         cfg: BacktestConfig with simulation parameters
         return_diagnostics: If True, return (trades_df, equity_df, diagnostics)
+        ctx: Optional BacktestContext with precomputed artifacts for speedup
         
     Returns:
         trades_df: Trade blotter with all completed trades
         equity_df: Daily equity curve with drawdown
         diagnostics: (optional) Dict with skip counters, regime stats, effective risk
     """
+    if ctx is None:
+        ctx = build_backtest_context(price_data_by_symbol, cfg)
+    
+    atr_by_symbol = ctx.atr_by_symbol
+    returns_df = ctx.returns_df
+    all_dates = ctx.all_dates
+    regime_df = ctx.regime_df if ctx.regime_df is not None else pd.DataFrame()
+    
     cash = cfg.initial_capital
     open_positions: Dict[str, OpenPosition] = {}
     completed_trades: List[dict] = []
@@ -331,12 +400,6 @@ def run_backtest(
     corr_matrix = pd.DataFrame()
     clusters: Dict[str, int] = {}
     
-    regime_df = pd.DataFrame()
-    if cfg.use_regime_filter and cfg.regime_symbol in price_data_by_symbol:
-        df_regime = price_data_by_symbol[cfg.regime_symbol]
-        if len(df_regime) > 0:
-            regime_df = compute_regime(df_regime, cfg)
-    
     all_signals = []
     for sym, sigs in signals_by_symbol.items():
         for sig in sigs:
@@ -344,10 +407,13 @@ def run_backtest(
     all_signals.sort(key=lambda s: s.entry_date)
     
     if cfg.use_correlation_caps or cfg.use_cluster_caps:
-        if all_signals:
+        if all_signals and len(returns_df) > 0:
             first_signal_date = all_signals[0].entry_date
-            returns_df = compute_returns_matrix(price_data_by_symbol)
-            if len(returns_df) > 0:
+            cache_key = (first_signal_date, cfg.corr_lookback_days, cfg.n_clusters)
+            
+            if cache_key in ctx.corr_cluster_cache:
+                corr_matrix, clusters = ctx.corr_cluster_cache[cache_key]
+            else:
                 returns_before_signal = returns_df[returns_df.index < first_signal_date]
                 if len(returns_before_signal) >= cfg.corr_lookback_days * 0.5:
                     corr_matrix, clusters = compute_symbol_correlation_and_clusters(
@@ -355,15 +421,9 @@ def run_backtest(
                         cfg.corr_lookback_days,
                         cfg.n_clusters
                     )
-    
-    atr_by_symbol: Dict[str, pd.Series] = {}
-    for sym, df in price_data_by_symbol.items():
-        atr_by_symbol[sym] = compute_atr(df, cfg.atr_length)
-    
-    all_dates = set()
-    for df in price_data_by_symbol.values():
-        all_dates.update(df.index.tolist())
-    all_dates = sorted(all_dates)
+                else:
+                    corr_matrix, clusters = pd.DataFrame(), {}
+                ctx.corr_cluster_cache[cache_key] = (corr_matrix, clusters)
     
     if not all_dates:
         return pd.DataFrame(), pd.DataFrame()
