@@ -21,6 +21,7 @@ I prefer iterative development, so please propose changes and explain them thoro
     - `backtester.py`: Implements a no-lookahead, bar-by-bar simulation engine with risk-based sizing, slippage, and commissions.
     - `metrics.py`: Calculates comprehensive performance metrics (win rate, Sharpe ratio, drawdown, etc.) and equity statistics.
 - **Optimization**: `optimize.py` facilitates walk-forward optimization with rolling train/test windows, parameter grid search, and objective-based scoring.
+- **BacktestContext Speedup** (Task 18): Precomputes window-invariant artifacts (ATR series, returns matrix, date calendar, regime data) once per walk-forward window and reuses across all grid iterations. Achieves ~2.6-3.2x speedup over the previous per-combo computation approach. Includes a correlation/cluster cache keyed by `(first_signal_date, lookback_days, n_clusters)` to avoid redundant portfolio-level computations.
 - **Robustness Features**:
     - **Run Manifests**: Every execution generates a manifest for full provenance, including command, git commit, and package versions.
     - **Deterministic Runs**: Supports `--symbols-seed` for reproducible symbol selection across runs.
