@@ -1,0 +1,205 @@
+TASK 21 — Capital Recycling Engine (Opportunity Cost Exits + Slot Management)
+
+GOAL
+Add portfolio-level “capital recycling” so stale/low-conviction open positions are reduced or exited
+to free budget capacity for higher-quality new signals.
+
+This improves:
+- Return per unit of deployed risk
+- Drawdown (less capital stuck in dead trades)
+- Reactivity to new high-quality setups
+
+NO LOOKAHEAD REQUIREMENT
+- Decisions must use ONLY information available as of prior close (or same-day open for actions executed at open).
+- Do NOT use future bars, future MFE, or future signals when deciding to exit.
+
+FILES TO MODIFY
+- backtester.py
+- metrics.py
+- main.py
+- optimize.py
+- replit.md
+
+──────────────────────────────────────────────────────────────────────────────
+PART 1 — BacktestConfig: Add Recycling Controls
+──────────────────────────────────────────────────────────────────────────────
+
+In BacktestConfig add:
+
+    # Capital recycling / opportunity-cost exits
+    use_capital_recycling: bool = True
+
+    # When a better signal arrives, we can downsize/exit the worst open positions
+    recycle_trigger_mode: str = "BUDGET_BLOCKED"  # ALWAYS | BUDGET_BLOCKED
+
+    # How much “better” a new candidate must be to trigger recycling
+    recycle_min_score_gap: float = 0.15  # (allocation_score_new / allocation_score_old) - 1.0
+
+    # Which positions are eligible to recycle
+    recycle_min_hold_days: int = 10      # don't churn too early
+    recycle_only_forming: bool = False   # if True, only recycle FORMING positions
+    recycle_exclude_confirmed_winners: bool = True  # keep strong confirmed winners running
+
+    # Ranking open positions for recycling (worst first)
+    recycle_rank_metric: str = "score_per_risk"  # score_per_risk | age | mfe | progress
+
+    # Recycling action
+    recycle_action: str = "PARTIAL"  # PARTIAL | EXIT
+    recycle_partial_fraction: float = 0.50  # sell half when recycling
+    recycle_min_remaining_position_fraction: float = 0.25  # don’t shrink below this
+
+    # Optional: no-progress recycle rule
+    recycle_no_progress_days: int = 25
+    recycle_no_progress_r: float = 0.25
+
+──────────────────────────────────────────────────────────────────────────────
+PART 2 — Define “Position Quality” & Recycling Priority
+──────────────────────────────────────────────────────────────────────────────
+
+Add helper function in backtester.py:
+
+def compute_position_recycle_score(pos) -> float:
+    """
+    Higher = better position worth keeping.
+    Uses only info known up to prior close.
+    """
+    ps = pos.meta.get("pattern_score", None)
+    alloc_score = pos.meta.get("allocation_score", 1.0)
+    risk_frac = pos.meta.get("risk_fraction_applied", 0.0)
+
+    base = float(alloc_score) if alloc_score is not None else 1.0
+    if ps is not None:
+        base *= (float(ps) / 100.0)
+
+    # Penalize tying up lots of risk for low score
+    if risk_frac and risk_frac > 0:
+        base = base / float(risk_frac)
+
+    # Penalize age mildly to prefer freeing stale positions
+    age = pos.days_held
+    base *= 1.0 / (1.0 + 0.01 * max(0, age - 20))
+
+    return float(base)
+
+Worst positions have LOW recycle_score.
+
+──────────────────────────────────────────────────────────────────────────────
+PART 3 — When Recycling Triggers
+──────────────────────────────────────────────────────────────────────────────
+
+In run_backtest(), when processing entries for a date:
+
+1) Rank candidate signals by allocation_score (already done in Task 20).
+2) Attempt to allocate budgets.
+3) If a candidate cannot be allocated due to budget limits:
+
+IF cfg.use_capital_recycling is True AND recycle_trigger_mode == "BUDGET_BLOCKED":
+- Evaluate whether the blocked candidate is sufficiently better than some open position(s)
+- If yes, recycle capital from the worst open positions until the candidate fits (or recycling exhausted)
+
+Trigger condition (simple + deterministic):
+- Let new_score = candidate.meta["allocation_score"]
+- Let old_score = recycle_score_of_open_position (or use its allocation_score)
+- Require: (new_score / old_score) - 1.0 >= cfg.recycle_min_score_gap
+
+Eligible open positions must satisfy:
+- days_held >= recycle_min_hold_days
+- if recycle_only_forming: pos.entry_kind == FORMING
+- if recycle_exclude_confirmed_winners: do not recycle CONFIRMED positions with MFE >= +0.5R
+
+──────────────────────────────────────────────────────────────────────────────
+PART 4 — Recycling Actions
+──────────────────────────────────────────────────────────────────────────────
+
+If a position is selected for recycling:
+
+A) PARTIAL recycle (preferred default):
+- Reduce shares by recycle_partial_fraction
+- Realize PnL at next day OPEN (no lookahead)
+- Update position risk usage accordingly
+- Enforce min remaining fraction:
+  remaining_shares >= original_shares * recycle_min_remaining_position_fraction
+  If below, convert to EXIT.
+
+B) EXIT recycle:
+- Close position fully at next day OPEN
+
+All recycle actions should create a new trade event in the blotter:
+- exit_reason = "RECYCLE_PARTIAL" or "RECYCLE_EXIT"
+
+Trade record should include:
+- recycle_triggered_by_symbol (the candidate that forced recycling)
+- recycle_replaced_by_score (new_score)
+- recycle_old_score (old position score)
+
+──────────────────────────────────────────────────────────────────────────────
+PART 5 — Budget Accounting (Critical)
+──────────────────────────────────────────────────────────────────────────────
+
+Ensure recycled positions immediately free budget capacity for the current date’s allocation decision:
+- After recycle action is scheduled, reduce that position’s “budget_used” tracking
+- Candidate can then be allocated without exceeding caps
+
+No cheating:
+- If recycle executes next day open, budget freeing should be based on notional risk tied up, not realized cash.
+- Use “risk budget” accounting, not cash accounting.
+
+──────────────────────────────────────────────────────────────────────────────
+PART 6 — Metrics & Reports
+──────────────────────────────────────────────────────────────────────────────
+
+In metrics.py add:
+- compute_recycling_metrics(trades_df):
+   * recycle_events_count
+   * pct_trades_recycled
+   * avg_pnl_r_recycled_vs_nonrecycled
+   * contribution_to_return_pct
+- output: outputs/recycling_report.csv
+
+Add to main.py:
+- Print recycling summary after backtest
+- Save recycling_report.csv
+
+──────────────────────────────────────────────────────────────────────────────
+PART 7 — optimize.py Grid Integration
+──────────────────────────────────────────────────────────────────────────────
+
+Add small tuning grid:
+- use_capital_recycling: [True]
+- recycle_min_score_gap: [0.10, 0.15, 0.25]
+- recycle_min_hold_days: [10, 15]
+- recycle_action: ["PARTIAL"]
+- recycle_partial_fraction: [0.33, 0.50]
+- recycle_exclude_confirmed_winners: [True]
+
+Include these fields in best config and validation runs.
+
+──────────────────────────────────────────────────────────────────────────────
+ACCEPTANCE CRITERIA
+──────────────────────────────────────────────────────────────────────────────
+
+1) Recycling ON/OFF runs without errors
+2) Budgets are never exceeded (daily and weekly)
+3) Recycling events appear in trades.csv with correct exit_reason + metadata
+4) outputs/recycling_report.csv created
+5) Validation shows either:
+   - improved return per unit risk, OR
+   - improved drawdown, OR
+   - improved capital concentration to higher-score setups
+
+──────────────────────────────────────────────────────────────────────────────
+SANITY TESTS
+──────────────────────────────────────────────────────────────────────────────
+
+Demo (allocator + recycling):
+python main.py --universe demo --max-stocks 20 --backtest-v2 \
+  --use-portfolio-allocator true --use-capital-recycling true
+
+Compare OFF:
+python main.py --universe demo --max-stocks 20 --backtest-v2 \
+  --use-portfolio-allocator true --use-capital-recycling false
+
+Optimization small:
+python optimize.py --universe nasdaq --max-stocks 80 --grid-size-limit 60 --symbols-seed 42
+
+END TASK 21
