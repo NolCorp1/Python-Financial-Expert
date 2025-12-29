@@ -28,6 +28,9 @@ I prefer iterative development, so please propose changes and explain them thoro
     - **Price Cache Integrity**: Tools to generate and repair price cache reports.
 - **Pattern Quality Scoring**: A 0-100 score based on pre-entry data, incorporating symmetry, neckline, separation, breakout strength, volume, and trend context.
 - **Score Inversion Fix**: Diagnostic and adjustment tools (`--score-policy INVERT`, `--trend-score-mode NEUTRAL`) for scenarios where high scores underperform.
+- **Score Policy Selection & Production Defaults**: Walk-forward aggregation by scoring knobs (`compute_score_policy_wf_summary`), stability-first selector (`select_best_scoring_defaults`), and enhanced validation mode with dual backtests.
+  - **Outputs**: `score_policy_wf_summary.csv` (aggregated results by scoring config), `chosen_scoring_defaults.json` (selected defaults with reasoning), `validation_scoring_recommendation.txt` (comparison report).
+  - **Monotonicity Check**: `check_score_monotonicity()` in `metrics.py` uses Spearman correlation to detect score inversion issues.
 - **Market Regime Filter**: Incorporates a market regime filter with soft-gating using MA-based trend and volatility detection to adjust risk.
 - **Correlation & Cluster Caps**: Implements portfolio-level risk management by limiting positions based on symbol correlation and cluster membership.
 - **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules for "FORMING" patterns.
