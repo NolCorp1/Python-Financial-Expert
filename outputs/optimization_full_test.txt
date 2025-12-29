@@ -1,0 +1,74 @@
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: AMED"}}}
+$AUTH: possibly delisted; no price data found  (1d 2017-12-31 20:29:21.396339 -> 2025-12-29 20:29:21.396339)
+$AMED: possibly delisted; no timezone found
+$CERE: possibly delisted; no timezone found
+$ACIA: possibly delisted; no timezone found
+$CHK: possibly delisted; no timezone found
+$AGTC: possibly delisted; no timezone found
+$ANSS: possibly delisted; no timezone found
+$ALTR: possibly delisted; no timezone found
+$ALLK: possibly delisted; no timezone found
+$ARVL: possibly delisted; no timezone found
+$CERN: possibly delisted; no timezone found
+$CHUY: possibly delisted; no timezone found
+$AXNX: possibly delisted; no timezone found
+$AYX: possibly delisted; no timezone found
+
+14 Failed downloads:
+['AUTH']: possibly delisted; no price data found  (1d 2017-12-31 20:29:21.396339 -> 2025-12-29 20:29:21.396339)
+['AMED', 'CERE', 'ACIA', 'CHK', 'AGTC', 'ANSS', 'ALTR', 'ALLK', 'ARVL', 'CERN', 'CHUY', 'AXNX', 'AYX']: possibly delisted; no timezone found
+$COUP: possibly delisted; no timezone found
+$DCFC: possibly delisted; no timezone found
+$EVBG: possibly delisted; no timezone found
+
+3 Failed downloads:
+['COUP', 'DCFC', 'EVBG']: possibly delisted; no timezone found
+$FSR: possibly delisted; no timezone found
+$FEYE: possibly delisted; no timezone found
+$HYZN: possibly delisted; no timezone found
+$HA: possibly delisted; no timezone found
+$IRTX: possibly delisted; no timezone found
+$FFIE: possibly delisted; no timezone found
+$FREY: possibly delisted; no timezone found
+$HES: possibly delisted; no timezone found
+$HZNP: possibly delisted; no timezone found
+$ICPT: possibly delisted; no timezone found
+$ISEE: possibly delisted; no timezone found
+$INFN: possibly delisted; no timezone found
+
+12 Failed downloads:
+['FSR', 'FEYE', 'HYZN', 'HA', 'IRTX', 'FFIE', 'FREY', 'HES', 'HZNP', 'ICPT', 'ISEE', 'INFN']: possibly delisted; no timezone found
+$MACOM: possibly delisted; no timezone found
+$KRTX: possibly delisted; no timezone found
+
+2 Failed downloads:
+['MACOM', 'KRTX']: possibly delisted; no timezone found
+Downloading NASDAQ symbol list...
+Download validation failed: Content appears to be HTML, not CSV
+Download returned insufficient symbols (0), using fallback
+
+============================================================
+WALK-FORWARD OPTIMIZATION
+============================================================
+Symbols: AAL, AAPL, ABG, ABNB, ABUS, ACAD, ACIA, ACLS, ACLX, ADBE, ADI, ADP, ADSK, AEHR, AFRM, AGIO, AGTC, AHCO, AKAM, AKRO, ALGM, ALGN, ALGT, ALK, ALKT, ALLK, ALNY, ALTR, AMAT, AMBA, AMD, AMED, AMGN, AMN, AMWL, AMZN, AN, ANIK, ANNX, ANSS, AOSL, APA, API, APP, APPF, APPS, AR, ARCO, ARQT, ARRY, ARVL, ARWR, ASAN, ASGN, ASML, ATAI, ATOS, ATXS, AURA, AUTH, AVGO, AXNX, AXTI, AYX, AZN, BCRX, BEAM, BFAM, BFLY, BIIB, BILL, BIO, BITF, BJRI, BKNG, BKR, BLMN, BLNK, BMRN, BNTX, BOX, BP, BROS, BRZE, BSY, BTAI, BTBT, BYDDF, CAKE, CAMT, CAN, CARG, CARS, CASY, CBRL, CDNS, CDW, CDXS, CEG, CERE, CERN, CERT, CFLT, CGNX, CHK, CHPT, CHRD, CHTR, CHUY, CHWY, CIEN, CLF, CLFD, CLOV, CLSK, CLX, CMCSA, CMPS, CNC, COIN, COP, COST, COUP, COUR, CPRT, CPRX, CQP, CRBU, CRSP, CRUS, CRWD, CSCO, CSGP, CSIQ, CTAS, CTRA, CTSH, CVE, CVNA, CVX, CYBR, DAL, DASH, DAWN, DCFC, DDOG, DIN, DIOD, DKNG, DNA, DNUT, DOCN, DOCS, DOCU, DOMO, DORM, DQ, DRCT, DRI, DT, DUOL, DV, DVA, DVN, DXCM, EA, EAT, EDIT, EMN, ENPH, ENSG, ENTA, ENTG, EOG, EPAM, EQNR, EQT, ERIC, ESTC, EVBG, EVGO, EXAS, EXC, EXEL, EXLS, EXPI, FANG, FAST, FEYE, FFIE, FFIV, FICO, FIVE, FIVN, FMC, FOLD, FORM, FREY, FRPT, FSLR, FSLY, FSR, FTNT, FTRE, FWRG, GALT, GDRX, GEHC, GENI, GFS, GH, GHRS, GILD, GLOB, GNRC, GOEV, GOOG, GOOGL, GPI, GPOR, GSIT, GTLB, GWRE, HA, HAL, HALO, HCAT, HES, HIMS, HIMX, HOLX, HON, HOOD, HPE, HQY, HRMY, HSTM, HUBS, HUN, HUT, HYZN, HZNP, ICHR, ICPT, IDXX, ILMN, INCY, INDI, INFN, INMD, INTC, INTU, IONS, IOT, IOVA, IPG, IRTC, IRTX, IRWD, ISEE, ISRG, JACK, JAZZ, JBHT, JBL, JBLU, JBSS, JKS, KDP, KEY, KHC, KIM, KLAC, KPTI, KRTX, KRYS, KURA, KYMR, LAD, LCID, LEA, LEN, LI, LITE, LMND, LNC, LNG, LNT, LNTH, LNW, LOCO, LPLA, LRCX, LSCC, LULU, LUV, LVS, LYFT, MACOM, MANH
+Train/Test/Step: 504/126/126 bars
+Objective: composite
+Max DD Train/Test: 18%/12%
+============================================================
+
+Step 1: Downloading price data (batch mode)...
+Price cache: 320 files, 26.6 MB
+Universe: 300 | Data OK: 269 | Liquidity pass: 204
+Added regime symbol QQQ for regime filter
+Added regime symbol SPY for regime filter
+
+Step 2: Building walk-forward windows...
+Created 0 windows
+ERROR: Not enough data for walk-forward windows
+Traceback (most recent call last):
+  File "/home/runner/workspace/optimize.py", line 2114, in <module>
+    main()
+  File "/home/runner/workspace/optimize.py", line 2018, in main
+    results_df, best_params, summary_text, window_results, robustness_stats = run_walkforward_optimization(
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: not enough values to unpack (expected 5, got 3)

@@ -1,50 +1,34 @@
 {
   "meta": {
-    "generated_at": "2025-12-28T23:53:56.547688",
+    "generated_at": "2025-12-29T20:27:58.447708",
     "generator": "optimize.py walk-forward v2",
     "version": "1.0.0"
   },
   "optimization": {
-    "universe_used": "demo",
-    "max_stocks_used": 8,
-    "train_bars": 252,
-    "test_bars": 63,
-    "step_bars": 63,
+    "universe_used": "nasdaq",
+    "max_stocks_used": 80,
+    "train_bars": 504,
+    "test_bars": 126,
+    "step_bars": 126,
     "objective": "composite",
-    "grid_size_limit": 5,
-    "min_trades_test": 2,
+    "grid_size_limit": 30,
+    "min_trades_test": 20,
     "min_exposure_days_test": 20,
     "max_dd_train": 0.18,
     "max_dd_test": 0.12,
     "min_pass_rate": 0.6,
     "min_median_test_score": 0.0,
-    "windows_completed": 12
+    "windows_completed": 3
   },
   "robustness": {
-    "total_candidates": 1,
-    "total_windows": 12,
-    "min_pass_rate_required": 0.6,
-    "min_median_score_required": 0.0,
-    "candidates_passing_gating": 0,
-    "relaxed_gating": true,
-    "warning": "No candidates met robustness criteria, using best available",
-    "selected": {
-      "pass_rate": 0.25,
-      "mean_score": -0.6783333333333333,
-      "median_score": -0.8099999999999999,
-      "score_variance": 0.03533472222222222,
-      "mean_dd": -0.5466666666666666,
-      "dd_variance": 0.002422222222222222,
-      "mean_trades": 2.3333333333333335,
-      "mean_exposure": 12.666666666666666,
-      "windows_passing": 3
-    }
+    "candidates": 0,
+    "passed_gating": 0
   },
   "detection": {
     "price_tolerance": 0.04,
-    "min_peak_height": 0.08,
+    "min_peak_height": 0.06,
     "min_separation": 20,
-    "max_separation": 260,
+    "max_separation": 200,
     "stop_loss_buffer": 0.02,
     "breakout_buffer": 0.002,
     "lookback_days": 504
@@ -52,26 +36,26 @@
   "portfolio": {
     "initial_capital": 100000.0,
     "risk_fraction_confirmed": 0.01,
-    "risk_fraction_forming": 0.004,
+    "risk_fraction_forming": 0.006,
     "max_positions_total": 10,
-    "max_positions_forming": 4,
+    "max_positions_forming": 3,
     "slippage_bps": 5.0,
     "commission_per_trade": 1.0
   },
   "exits": {
     "confirmed": {
-      "move_stop_to_be_at_r": 0.25,
-      "partial_tp_enabled": false,
+      "move_stop_to_be_at_r": 0.5,
+      "partial_tp_enabled": true,
       "partial_tp_at_r": 1.0,
       "partial_tp_fraction": 0.5,
       "trailing_enabled": true,
       "trailing_start_r": 1.0,
-      "trailing_atr_mult": 2.5
+      "trailing_atr_mult": 2.0
     },
     "forming": {
-      "max_hold_days": 75,
-      "no_progress_days": 25,
-      "no_progress_r": 0.75,
+      "max_hold_days": 60,
+      "no_progress_days": 20,
+      "no_progress_r": 0.5,
       "no_progress_action": "EXIT",
       "tighten_stop_to_r": -0.25
     },
@@ -88,16 +72,23 @@
     "max_positions_per_cluster": 2
   },
   "regime": {
-    "enabled": true,
+    "enabled": false,
     "mode": "SOFT_GATE",
     "symbol": "QQQ",
     "fast_ma": 50,
-    "slow_ma": 150,
+    "slow_ma": 200,
     "vol_lookback": 20,
-    "vol_high_threshold": 0.025,
-    "downtrend_forming_mult": 1.0,
-    "highvol_forming_mult": 0.85,
-    "highvol_confirmed_mult": 1.0
+    "vol_high_threshold": 0.03,
+    "downtrend_forming_mult": 0.85,
+    "highvol_forming_mult": 0.7,
+    "highvol_confirmed_mult": 0.85
+  },
+  "scoring": {
+    "score_policy": "RAW",
+    "min_pattern_score": 0,
+    "top_k_per_day": 0,
+    "top_k_per_week": 0,
+    "trend_score_mode": "NEUTRAL"
   },
   "liquidity": {
     "min_price": 5.0,
@@ -105,33 +96,5 @@
     "filter_window": 20,
     "enabled": true
   },
-  "raw_best_params": {
-    "breakout_buffer": 0.002,
-    "confirmed_move_stop_to_be_at_r": 0.25,
-    "confirmed_partial_tp_at_r": 1.0,
-    "confirmed_partial_tp_enabled": false,
-    "confirmed_partial_tp_fraction": 0.5,
-    "confirmed_trailing_atr_mult": 2.5,
-    "confirmed_trailing_enabled": true,
-    "confirmed_trailing_start_r": 1.0,
-    "forming_max_hold_days": 75,
-    "forming_no_progress_action": "EXIT",
-    "forming_no_progress_days": 25,
-    "forming_no_progress_r": 0.75,
-    "low_tolerance": 0.04,
-    "max_positions_forming": 4,
-    "max_sep": 260,
-    "min_sep": 20,
-    "neckline_min_rise": 0.08,
-    "regime_downtrend_forming_mult": 1.0,
-    "regime_highvol_confirmed_mult": 1.0,
-    "regime_highvol_forming_mult": 0.85,
-    "regime_mode": "SOFT_GATE",
-    "regime_trend_fast_ma": 50,
-    "regime_trend_slow_ma": 150,
-    "regime_vol_high_threshold": 0.025,
-    "regime_vol_lookback": 20,
-    "risk_fraction_forming": 0.004,
-    "stop_loss_buffer": 0.02
-  }
+  "raw_best_params": {}
 }

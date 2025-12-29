@@ -1,0 +1,17 @@
+{
+  "chosen_defaults": {
+    "score_policy": "INVERT",
+    "trend_score_mode": "ABOVE_MA200",
+    "min_pattern_score": 40,
+    "top_k_per_day": 2
+  },
+  "reasoning": {
+    "pass_rate": 0.0,
+    "median_score": 0,
+    "median_dd": -2.09,
+    "median_return": -0.91,
+    "trade_count": 12.0,
+    "selection_method": "relaxed_gating"
+  },
+  "warning": "No candidates met stability criteria, using best available"
+}

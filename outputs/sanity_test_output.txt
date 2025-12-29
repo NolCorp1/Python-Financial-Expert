@@ -346,4 +346,175 @@ Window 2/3: Train 2022-08-08 to 2024-08-08, Test 2024-08-09 to 2025-02-10
   Train score: 4.79, Test score: -inf
 
 Window 3/3: Train 2023-02-07 to 2025-02-10, Test 2025-02-11 to 2025-08-12
-  Grid search:   0%|          | 0/30 [00:00<?, ?it/s]  Grid search:   3%|▎         | 1/30 [00:02<01:05,  2.25s/it]  Grid search:   7%|▋         | 2/30 [00:04<01:07,  2.42s/it]  Grid search:  10%|█         | 3/30 [00:08<01:15,  2.78s/it]  Grid search:  13%|█▎        | 4/30 [00:10<01:09,  2.67s/it]  Grid search:  17%|█▋        | 5/30 [00:12<01:04,  2.59s/it]  Grid search:  20%|██        | 6/30 [00:16<01:10,  2.94s/it]  Grid search:  23%|██▎       | 7/30 [00:19<01:08,  2.97s/it]  Grid search:  27%|██▋       | 8/30 [00:22<01:04,  2.92s/it]  Grid search:  30%|███       | 9/30 [00:24<00:58,  2.80s/it]  Grid search:  33%|███▎      | 10/30 [00:28<00:57,  2.89s/it]  Grid search:  37%|███▋      | 11/30 [00:30<00:55,  2.91s/it]  Grid search:  40%|████      | 12/30 [00:34<00:56,  3.16s/it]  Grid search:  43%|████▎     | 13/30 [00:38<00:55,  3.25s/it]  Grid search:  47%|████▋     | 14/30 [00:41<00:53,  3.34s/it]  Grid search:  50%|█████     | 15/30 [00:44<00:48,  3.25s/it]  Grid search:  53%|█████▎    | 16/30 [00:47<00:42,  3.06s/it]  Grid search:  57%|█████▋    | 17/30 [00:50<00:40,  3.10s/it]  Grid search:  60%|██████    | 18/30 [00:53<00:35,  2.98s/it]  Grid search:  63%|██████▎   | 19/30 [00:56<00:32,  2.95s/it]  Grid search:  67%|██████▋   | 20/30 [00:58<00:27,  2.72s/it]  Grid search:  70%|███████   | 21/30 [01:00<00:24,  2.69s/it]
+  Grid search:   0%|          | 0/30 [00:00<?, ?it/s]  Grid search:   3%|▎         | 1/30 [00:02<01:05,  2.25s/it]  Grid search:   7%|▋         | 2/30 [00:04<01:07,  2.42s/it]  Grid search:  10%|█         | 3/30 [00:08<01:15,  2.78s/it]  Grid search:  13%|█▎        | 4/30 [00:10<01:09,  2.67s/it]  Grid search:  17%|█▋        | 5/30 [00:12<01:04,  2.59s/it]  Grid search:  20%|██        | 6/30 [00:16<01:10,  2.94s/it]  Grid search:  23%|██▎       | 7/30 [00:19<01:08,  2.97s/it]  Grid search:  27%|██▋       | 8/30 [00:22<01:04,  2.92s/it]  Grid search:  30%|███       | 9/30 [00:24<00:58,  2.80s/it]  Grid search:  33%|███▎      | 10/30 [00:28<00:57,  2.89s/it]  Grid search:  37%|███▋      | 11/30 [00:30<00:55,  2.91s/it]  Grid search:  40%|████      | 12/30 [00:34<00:56,  3.16s/it]  Grid search:  43%|████▎     | 13/30 [00:38<00:55,  3.25s/it]  Grid search:  47%|████▋     | 14/30 [00:41<00:53,  3.34s/it]  Grid search:  50%|█████     | 15/30 [00:44<00:48,  3.25s/it]  Grid search:  53%|█████▎    | 16/30 [00:47<00:42,  3.06s/it]  Grid search:  57%|█████▋    | 17/30 [00:50<00:40,  3.10s/it]  Grid search:  60%|██████    | 18/30 [00:53<00:35,  2.98s/it]  Grid search:  63%|██████▎   | 19/30 [00:56<00:32,  2.95s/it]  Grid search:  67%|██████▋   | 20/30 [00:58<00:27,  2.72s/it]  Grid search:  70%|███████   | 21/30 [01:00<00:24,  2.69s/it]  Grid search:  73%|███████▎  | 22/30 [01:03<00:21,  2.66s/it]  Grid search:  77%|███████▋  | 23/30 [01:05<00:17,  2.50s/it]  Grid search:  80%|████████  | 24/30 [01:08<00:15,  2.65s/it]  Grid search:  83%|████████▎ | 25/30 [01:10<00:12,  2.44s/it]  Grid search:  87%|████████▋ | 26/30 [01:13<00:09,  2.49s/it]  Grid search:  90%|█████████ | 27/30 [01:15<00:07,  2.40s/it]  Grid search:  93%|█████████▎| 28/30 [01:17<00:04,  2.28s/it]  Grid search:  97%|█████████▋| 29/30 [01:19<00:02,  2.33s/it]  Grid search: 100%|██████████| 30/30 [01:22<00:00,  2.40s/it]                                                              
+  SKIP REASONS:
+    - Cluster cap: 7
+
+  SKIP REASONS:
+    - Cluster cap: 7
+
+  SKIP REASONS:
+    - Cluster cap: 15
+
+  SKIP REASONS:
+    - Cluster cap: 10
+
+  SKIP REASONS:
+    - Cluster cap: 10
+
+  SKIP REASONS:
+    - Cluster cap: 1
+
+  SKIP REASONS:
+    - Cluster cap: 10
+
+  SKIP REASONS:
+    - Cluster cap: 2
+
+  SKIP REASONS:
+    - Cluster cap: 11
+
+  SKIP REASONS:
+    - Cluster cap: 9
+    - Invalid sizing: 1
+
+  SKIP REASONS:
+    - Cluster cap: 1
+
+  SKIP REASONS:
+    - Cluster cap: 1
+
+  SKIP REASONS:
+    - Cluster cap: 1
+
+  SKIP REASONS:
+    - Cluster cap: 12
+
+  SKIP REASONS:
+    - Cluster cap: 10
+
+  SKIP REASONS:
+    - Cluster cap: 12
+
+  SKIP REASONS:
+    - Cluster cap: 7
+
+  SKIP REASONS:
+    - Cluster cap: 14
+
+  SKIP REASONS:
+    - Cluster cap: 9
+
+  SKIP REASONS:
+    - Max FORMING positions: 2
+    - Cluster cap: 12
+
+  SKIP REASONS:
+    - Cluster cap: 8
+
+  SKIP REASONS:
+    - Cluster cap: 12
+
+  SKIP REASONS:
+    - Cluster cap: 13
+
+  SKIP REASONS:
+    - Max FORMING positions: 13
+    - Correlation cap: 1
+    - Cluster cap: 9
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x1.00): 2
+    - CONFIRMED in high vol (x0.80): 1
+  Train score: 10.35, Test score: -inf
+
+Step 5: Computing results...
+
+WALK-FORWARD OPTIMIZATION SUMMARY
+========================================
+Windows: 3
+Valid test windows (any trades): 0
+Quality test windows (min trades met): 0
+Mean test score: nan
+Median test score: nan
+
+ROBUSTNESS GATING SUMMARY
+========================================
+Total candidates evaluated: 0
+Total windows: 0
+Min pass rate required: 60%
+Min median score required: 0.00
+Candidates passing gating: 0
+
+OVERALL BEST PARAMETERS (by median OOS score + stability):
+{}
+Mean OOS score: -inf
+
+REGIME FILTER STATISTICS
+------------------------------
+  OFF: 2 windows, mean score=nan
+  SOFT_GATE: 1 windows, mean score=nan
+  Hard skipped (HARD_SKIP mode): 0
+  Soft gated (reduced risk): 3
+  Downtrend days (total): 188
+  High-vol days (total): 21
+  Avg effective risk: FORMING=0.007, CONFIRMED=0.010
+
+WALK-FORWARD STABILITY SUMMARY v2
+==================================================
+
+--- Parameter Win Counts ---
+  risk_fraction_forming: 0.008(2), 0.006(1)
+  max_positions_forming: 2(2), 3(1)
+  forming_no_progress_days: 20(2), 25(1)
+  forming_no_progress_r: 0.75(1), 0.25(1), 0.5(1)
+  forming_max_hold_days: 60(2), 75(1)
+  confirmed_partial_tp_at_r: 0.75(2), 1.0(1)
+  confirmed_partial_tp_enabled: True(2), False(1)
+  confirmed_move_stop_to_be_at_r: 0.5(2), 0.25(1)
+  confirmed_trailing_enabled: False(2), True(1)
+  confirmed_trailing_atr_mult: 2.0(2), 1.5(1)
+  low_tolerance: 0.05(2), 0.04(1)
+  neckline_min_rise: 0.1(2), 0.08(1)
+  min_sep: 20(2), 30(1)
+  breakout_buffer: 0.002(3)
+  confirmed_partial_tp_fraction: 0.33(3)
+  confirmed_trailing_start_r: 0.75(2), 1.0(1)
+  forming_no_progress_action: EXIT(3)
+  max_sep: 260(3)
+  min_pattern_score: 40(2), 0(1)
+  regime_downtrend_forming_mult: 1.0(1)
+  regime_highvol_confirmed_mult: 0.8(1)
+  regime_highvol_forming_mult: 1.0(1)
+  regime_mode: OFF(2), SOFT_GATE(1)
+  regime_trend_fast_ma: 50(1)
+  regime_trend_slow_ma: 150(1)
+  regime_vol_high_threshold: 0.025(1)
+  regime_vol_lookback: 20(1)
+  score_policy: INVERT(2), RAW(1)
+  stop_loss_buffer: 0.02(3)
+  top_k_per_day: 3(1), 2(1), 5(1)
+  trend_score_mode: BELOW_MA200(2), ABOVE_MA200(1)
+
+--- Aggregate Statistics ---
+  Mean test return: 0.73%
+  Median test return: -0.91%
+  Mean test max DD: -1.61%
+  Median test max DD: -1.88%
+  Windows passing constraints: 0/3 (0%)
+
+Results saved to: outputs/walkforward_results.csv
+Best params saved to: outputs/walkforward_best_params.json
+Full strategy config saved to: outputs/strategy_best_config.json
+Summary saved to: outputs/walkforward_summary.txt
+Score policy summary saved to: outputs/score_policy_wf_summary.csv
+Chosen scoring defaults saved to: outputs/chosen_scoring_defaults.json
+  Warning: No candidates met stability criteria, using best available
+  Selected: score_policy=INVERT, trend=ABOVE_MA200, min_score=40, top_k=2
+Run manifest saved to: outputs/manifests/20251229_202351_a588a075_manifest.json
+Symbols list saved to: outputs/manifests/20251229_202351_a588a075_symbols.txt
+
+============================================================
+OPTIMIZATION COMPLETE!
+Run ID: 20251229_202351_a588a075
+============================================================
