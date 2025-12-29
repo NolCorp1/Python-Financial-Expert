@@ -1,0 +1,151 @@
+Task 17 — Select Best Score Policy OOS + Lock Production Defaults
+================================================================================
+Objective
+---------
+Now that score inversion is fixed and trend_mode=NEUTRAL is default,
+we need to choose the best score policy and filtering rules out-of-sample,
+then save them as production defaults in strategy_best_config.json.
+
+We will:
+1) Run walk-forward focusing on scoring knobs (policy/threshold/top-k)
+2) Summarize results by score_policy and trend_score_mode
+3) Automatically pick production defaults based on stability + performance
+4) Validate the chosen defaults on a large universe (300–800 symbols)
+5) Write a short “production recommendation” report
+
+Files to Edit
+-------------
+- optimize.py
+- metrics.py
+- (optional) main.py (only if report wiring is missing)
+- replit.md
+
+1) Add Aggregated WF Summary by Score Knobs
+-------------------------------------------
+In optimize.py after walk-forward completes, create:
+
+outputs/score_policy_wf_summary.csv
+
+Group by:
+- score_policy
+- trend_score_mode
+- min_pattern_score
+- top_k_per_day
+- top_k_per_week
+
+Compute:
+- windows_total
+- windows_passing
+- pass_rate
+- mean_test_score
+- median_test_score
+- mean_test_return_pct
+- median_test_return_pct
+- mean_test_max_dd_pct
+- median_test_max_dd_pct
+- mean_test_trade_count
+- mean_test_exposure_days
+
+Acceptance:
+- The summary makes it obvious which scoring config is best + stable.
+
+2) Add a “Stability-First” Selector for Scoring Defaults
+--------------------------------------------------------
+Implement a selector function:
+
+select_best_scoring_defaults(summary_df) -> dict
+
+Rules (v1):
+- require pass_rate >= --min-pass-rate (default 0.60)
+- require median_test_score >= --min-median-test-score (default 0.0)
+- maximize median_test_score
+- tie-breakers:
+    1) minimize median_test_max_dd_pct
+    2) maximize median_test_return_pct
+    3) prefer simpler rules (min_score=0 over 60 if similar)
+
+Output:
+- chosen_scoring_defaults.json
+- include reasoning fields:
+  pass_rate, median_score, median_dd, median_return, trade_count
+
+Acceptance:
+- The chosen defaults are not just highest mean; they’re stable.
+
+3) Ensure strategy_best_config.json Includes the Selected Scoring Defaults
+--------------------------------------------------------------------------
+When saving outputs/strategy_best_config.json, ensure the scoring fields are present:
+- score_policy
+- trend_score_mode
+- min_pattern_score
+- top_k_per_day
+- top_k_per_week
+
+Acceptance:
+- validate-best and main --config runs use these scoring defaults automatically.
+
+4) Validation Run at Scale (use cache)
+--------------------------------------
+Run:
+python optimize.py --validate-best --validate-stocks 500
+
+Enhance validation outputs to include:
+- outputs/validation_score_bucket_report.csv
+- outputs/validation_feature_attribution_report.csv
+
+Plus a final:
+- outputs/validation_scoring_recommendation.txt
+
+Contents:
+- chosen defaults
+- overall metrics (ALL / FORMING / CONFIRMED)
+- score decile monotonicity check:
+    - avg_r should be higher in top deciles than bottom (not necessarily perfect but not inverted)
+- compare “no scoring filter” baseline vs chosen defaults on same universe:
+    - do two runs internally:
+        A) scoring disabled: min_score=0, topk=0
+        B) scoring enabled: chosen defaults
+  then print delta in return/DD/expectancy
+
+Acceptance:
+- You get a single text recommendation that says what to run.
+
+5) Add Guardrail: Prevent Re-Introducing Inversion
+---------------------------------------------------
+In metrics.py add a simple check:
+
+def check_score_monotonicity(bucket_df) -> dict:
+- returns flags:
+  - inverted_top_decile (top bucket avg_r < bottom bucket avg_r)
+  - monotonicity_score (Spearman correlation between bucket index and avg_r)
+
+Write into validation summary JSON and print warning if inverted.
+
+Acceptance:
+- The system warns loudly if scoring regresses.
+
+Manual Test Plan
+----------------
+1) Run optimization with enough universe:
+python optimize.py --universe nasdaq --max-stocks 300 \
+  --train-bars 504 --test-bars 126 --step-bars 126 \
+  --objective composite --grid-size-limit 250 \
+  --min-trades-test 20 --min-exposure-days-test 20
+
+2) Check:
+- outputs/score_policy_wf_summary.csv exists
+- outputs/chosen_scoring_defaults.json exists
+- outputs/strategy_best_config.json includes chosen scoring fields
+
+3) Validate:
+python optimize.py --validate-best --validate-stocks 500
+
+Confirm:
+- validation scoring reports exist
+- scoring recommendation text exists
+- monotonicity check does not show inversion
+
+Non-Goals
+---------
+- ML model scoring (XGBoost)
+- Optimizing feature weights (unless you choose to later)

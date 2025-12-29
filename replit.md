@@ -1,429 +1,58 @@
 # NASDAQ Double Bottom Pattern Scanner
 
-## Workflow: Optimize -> Validate -> Run
-
-The scanner follows a three-phase workflow for production use:
-
-### 1. Optimization (Train)
-```bash
-# Small-scale optimization (fast, for testing)
-python optimize.py --universe nasdaq --max-stocks 100 \
-  --train-bars 504 --test-bars 126 --step-bars 126 \
-  --grid-size-limit 50 --min-trades-test 10
-
-# Full optimization (200+ symbols, comprehensive grid)
-python optimize.py --universe nasdaq --max-stocks 200 \
-  --train-bars 504 --test-bars 126 --step-bars 126 \
-  --objective composite --grid-size-limit 250 \
-  --min-trades-test 20 --min-exposure-days-test 20
-```
-Outputs: `outputs/strategy_best_config.json` (full config), `outputs/walkforward_results.csv`
-
-### 2. Validation (Out-of-Sample Test)
-```bash
-# Validate on larger universe (300 stocks)
-python optimize.py --validate-best --validate-stocks 300
-
-# Or use main.py directly with config
-python main.py --config outputs/strategy_best_config.json \
-  --universe nasdaq --max-stocks 300 --backtest-v2
-```
-This runs a full backtest on fresh symbols using the optimized config.
-
-### 3. Production Run (Live Scanning)
-```bash
-# Scan with optimized config
-python main.py --config outputs/strategy_best_config.json \
-  --universe nasdaq --max-stocks 500
-
-# Scan + backtest with config
-python main.py --config outputs/strategy_best_config.json \
-  --universe nasdaq --max-stocks 500 --backtest-v2
-```
-
-### Config File Structure
-The `strategy_best_config.json` includes:
-- **meta**: generation timestamp, version
-- **optimization**: training parameters used
-- **robustness**: pass rate, median score, stability stats
-- **detection**: price_tolerance, min_peak_height, separation
-- **portfolio**: risk fractions, position limits
-- **exits**: partial TP, trailing stops, no-progress rules
-- **correlation_caps**: lookback, max correlation
-- **cluster_caps**: n_clusters, max per cluster
-- **regime**: mode, MA periods, risk multipliers
-- **liquidity**: min price, min dollar volume
-
-## Reproducibility & Audit Logs
-
-Every run (optimize, validate, backtest) generates a manifest for full provenance tracking.
-
-### Run Manifests
-Location: `outputs/manifests/<run_id>_manifest.json` + `<run_id>_symbols.txt`
-
-Each manifest includes:
-- run_id (timestamp + hash)
-- command line used
-- mode: optimize / validate / backtest
-- universe type, symbols used, liquidity filters
-- git commit hash
-- package versions (python, pandas, yfinance, pyarrow)
-- strategy config applied
-- cache stats (hits/misses)
-
-### Deterministic Runs
-Use `--symbols-seed` for reproducible symbol selection:
-```bash
-python optimize.py --universe nasdaq --max-stocks 100 --symbols-seed 123
-python main.py --universe nasdaq --max-stocks 100 --symbols-seed 123 --backtest-v2
-```
-Same seed + same command = identical results.
-
-### Parity Check
-Verify that a config produces identical results across runs:
-```bash
-python main.py --config outputs/strategy_best_config.json \
-  --universe nasdaq --max-stocks 50 --symbols-seed 123 --parity-check
-```
-Compares trades, end equity, and max drawdown between two runs.
-
-### Comparing Runs (Diff)
-Use manifest.py to compare two runs:
-```bash
-python manifest.py --diff outputs/manifests/run1_manifest.json outputs/manifests/run2_manifest.json
-```
-Outputs: `outputs/diff_<run1>_<run2>.txt` showing config/symbol/metric differences.
-
-### Price Cache Integrity
-Generate integrity report:
-```python
-from price_cache import generate_cache_report
-report = generate_cache_report(symbols, auto_repair=True)
-```
-Report saved to: `outputs/price_cache_report.csv`
-
-## Pattern Quality Scoring (Task 15)
-
-Every pattern is scored (0-100) using pre-entry data only. Higher scores indicate higher quality setups.
-
-### Score Features (v1 weights)
-- **Symmetry (20%)**: How closely bottom prices match
-- **Neckline (20%)**: Height of peak above bottoms
-- **Separation (15%)**: Time between bottoms (optimal ~75 days)
-- **Breakout Strength (15%)**: Candle quality on breakout (CONFIRMED only)
-- **Volume (20%)**: Volume signature at key points
-- **Trend Context (10%)**: Position vs 200-day MA
-
-### Filtering Signals by Score
-```bash
-# Only trade patterns with score >= 60
-python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --min-pattern-score 60
-
-# Keep only top 3 signals per day
-python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --top-k-per-day 3
-
-# Combine both filters
-python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --min-pattern-score 50 --top-k-per-day 5
-```
-
-### Score Reports
-After backtest, two reports are generated:
-- `outputs/score_bucket_report.csv`: Performance by score decile
-- `outputs/score_threshold_report.csv`: Performance at different minimum thresholds
-
-**Interpreting Reports:**
-- Look for monotonic improvement (higher scores -> better performance)
-- If higher scores don't correlate with better results, weights may need tuning
-- Use threshold comparison to find optimal --min-pattern-score value
-
-### Score in trades.csv
-Each trade includes:
-- `pattern_score`: Overall score (0-100)
-- `score_symmetry`, `score_neckline`, `score_separation`, etc.: Individual feature scores (0-1)
-
-## Score Inversion Fix (Task 16)
-
-When high scores underperform (score inversion), use these diagnostic and fix tools.
-
-### Feature Attribution Report
-After backtest, `outputs/feature_attribution_report.csv` shows per-feature correlation with outcomes:
-- `corr_to_r`: Correlation with R-multiple (negative = feature hurts performance)
-- `corr_to_win`: Correlation with win rate
-- Quintile breakdown: Performance at each feature quintile
-
-### Score Policy (Diagnostic)
-```bash
-# Test if inverting scores improves performance (diagnostic only)
-python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --score-policy INVERT
-```
-- RAW (default): Use scores as computed
-- INVERT: Score = 100 - computed_score (flips bucket performance)
-
-### Trend Scoring Mode
-```bash
-# NEUTRAL (default): Removes trend influence - safest for inverted scores
-python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --trend-score-mode NEUTRAL
-
-# Test if double bottoms work better below MA200
-python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --trend-score-mode BELOW_MA200
-```
-
-### Improved Breakout/Volume Scoring
-- **Breakout**: Now uses ATR normalization + neckline margin (reduces blow-off candle bias)
-- **Volume**: Uses log transform (reduces extreme spike influence)
-
-### Console Summary
-After backtest, top positive/negative correlated features are printed:
-```
-FEATURE ATTRIBUTION SUMMARY
---------------------------------------------------
-Top 2 positively correlated with R:
-        breakout: corr=+0.019
-Top 2 negatively correlated with R:
-        symmetry: corr=-0.198
-           trend: corr=-0.237
-```
-
-### Walk-Forward Integration
-Scoring parameters are included in optimization grid:
-- `score_policy`: RAW, INVERT
-- `min_pattern_score`: 0, 40, 50, 60
-- `top_k_per_day`: 0, 2, 3, 5
-- `trend_score_mode`: NEUTRAL, BELOW_MA200, ABOVE_MA200
-
 ## Overview
-A comprehensive Python program that scans for double bottom ("W") chart patterns in NASDAQ-listed stocks using historical price data from yfinance. The scanner uses algorithmic pattern detection with scipy, RSI divergence confirmation, and volume analysis. Includes a full backtesting engine to evaluate strategy performance.
+This project is a Python program designed to identify "Double Bottom" (W) chart patterns in NASDAQ-listed stocks. It leverages algorithmic pattern detection, RSI divergence, and volume analysis on historical price data from yfinance. The system includes a robust backtesting engine for strategy evaluation, a pattern quality scoring mechanism, and tools for optimizing and validating trading strategies. Its purpose is to provide a comprehensive solution for traders looking to identify and capitalize on double bottom patterns, offering capabilities for signal generation, performance analysis, and risk management within various market regimes.
 
-## Project Structure
-```
-.
-├── main.py                    # Main entry point (demo mode, CLI, or backtest)
-├── double_bottom_scanner.py   # Core scanner module with all functions
-├── strategy.py                # Trading strategy and signal generation
-├── backtester.py              # Backtesting engine
-├── metrics.py                 # Performance metrics calculation
-├── alerts.py                  # Alert system for pattern breakouts
-├── double_bottom_results.csv  # Output: detected patterns (generated)
-├── charts/                    # Output: charts and equity curves (generated)
-├── pyproject.toml            # Python dependencies
-└── .gitignore                # Git ignore rules
-```
+## User Preferences
+I prefer iterative development, so please propose changes and explain them thoroughly. I appreciate detailed explanations of complex concepts. Do not make changes to the `charts/` folder. Do not modify the `outputs/` folder directly; all generated outputs should be placed there by the scripts.
 
-## Features
-- Algorithmic detection of classic double bottom patterns
-- Swing low/high detection using scipy.signal.find_peaks
-- RSI divergence confirmation (bullish divergence)
-- Volume analysis (decreased volume on 2nd bottom)
-- Pattern strength scoring (0-100)
-- Configurable parameters via command-line arguments
-- CSV output with all detected patterns
-- Chart generation with matplotlib
-- **Backtesting engine** with bar-by-bar simulation
-- **Performance metrics** (win rate, Sharpe ratio, drawdown, etc.)
-- **Alert system** for confirmed pattern breakouts
+## System Architecture
 
-## Usage
+### UI/UX Decisions
+- **Chart Generation**: Uses Matplotlib to generate visual representations of detected patterns and equity curves for analysis.
+- **Console Output**: Provides clear, formatted reports for metrics, feature attribution, and summary statistics in the console.
 
-### Quick Demo (20 stocks)
-```bash
-python main.py
-```
+### Technical Implementations
+- **Pattern Detection**: Utilizes `scipy.signal.find_peaks` for accurate identification of swing lows and highs.
+- **Data Acquisition**: Employs `yfinance` for downloading historical stock price data.
+- **Algorithmic Core**: `double_bottom_scanner.py` houses the core pattern detection logic, including RSI divergence and volume analysis.
+- **Strategy & Backtesting**:
+    - `strategy.py`: Defines the trading strategy and signal generation, supporting both "FORMING" and "CONFIRMED" pattern entries.
+    - `backtester.py`: Implements a no-lookahead, bar-by-bar simulation engine with risk-based sizing, slippage, and commissions.
+    - `metrics.py`: Calculates comprehensive performance metrics (win rate, Sharpe ratio, drawdown, etc.) and equity statistics.
+- **Optimization**: `optimize.py` facilitates walk-forward optimization with rolling train/test windows, parameter grid search, and objective-based scoring.
+- **Robustness Features**:
+    - **Run Manifests**: Every execution generates a manifest for full provenance, including command, git commit, and package versions.
+    - **Deterministic Runs**: Supports `--symbols-seed` for reproducible symbol selection across runs.
+    - **Parity Check**: Verifies identical results between runs using a given configuration.
+    - **Price Cache Integrity**: Tools to generate and repair price cache reports.
+- **Pattern Quality Scoring**: A 0-100 score based on pre-entry data, incorporating symmetry, neckline, separation, breakout strength, volume, and trend context.
+- **Score Inversion Fix**: Diagnostic and adjustment tools (`--score-policy INVERT`, `--trend-score-mode NEUTRAL`) for scenarios where high scores underperform.
+- **Market Regime Filter**: Incorporates a market regime filter with soft-gating using MA-based trend and volatility detection to adjust risk.
+- **Correlation & Cluster Caps**: Implements portfolio-level risk management by limiting positions based on symbol correlation and cluster membership.
+- **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules for "FORMING" patterns.
+- **Portfolio Rules Engine**: Manages position sizing, concurrent position limits, and specific exit rules for different pattern "kinds" (FORMING/CONFIRMED).
+- **Universe Management**: `universe.py` handles NASDAQ symbol caching and liquidity filtering (min price, min dollar volume).
 
-### Custom Scans
-```bash
-# Scan 100 stocks
-python main.py --max-stocks 100
+### Feature Specifications
+- **Algorithmic Double Bottom Detection**: Identifies "W" patterns with configurable price tolerance, peak height, and separation days.
+- **RSI Divergence Confirmation**: Integrates bullish RSI divergence as a pattern quality factor.
+- **Volume Analysis**: Assesses volume signatures at key pattern points, particularly decreased volume on the second bottom.
+- **Configurable Parameters**: All key detection, backtesting, and portfolio parameters are configurable via command-line arguments.
+- **Output Generation**: Produces CSV outputs for detected patterns, trade blotters, equity curves, and various performance reports.
+- **Alert System**: Designed to alert on confirmed pattern breakouts (implementation details are modular).
 
-# Scan specific symbols
-python main.py --symbols AAPL MSFT GOOGL NVDA
+### System Design Choices
+- **Modular Design**: Structured into distinct Python modules (`main.py`, `double_bottom_scanner.py`, `strategy.py`, `backtester.py`, `metrics.py`, `alerts.py`) for clarity and extensibility.
+- **No-Lookahead Principle**: Ensures all trading decisions in the backtester are based solely on information available at that point in time.
+- **Risk-Based Sizing**: Positions are sized based on a defined risk per trade (e.g., a percentage of equity).
+- **Parameter Optimization**: Designed for comprehensive parameter optimization through walk-forward analysis.
 
-# Generate charts for top 5 patterns
-python main.py --plot --num-plots 5
-
-# Adjust detection parameters
-python main.py --price-tolerance 0.03 --min-peak-height 0.08
-
-# See all options
-python main.py --help
-```
-
-### Backtesting
-```bash
-# Run backtest with default settings
-python main.py --backtest
-
-# Custom backtest configuration
-python main.py --backtest --symbols AAPL NVDA AMD --initial-capital 10000
-
-# Full configuration
-python main.py --backtest --max-stocks 50 \
-  --initial-capital 25000 \
-  --position-size 0.15 \
-  --stop-loss-buffer 0.02 \
-  --max-hold-days 60 \
-  --trailing-stop
-```
-
-### Backtest Parameters
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| --initial-capital | 10000 | Starting capital for simulation |
-| --position-size | 0.1 | Fraction of capital per trade (10%) |
-| --stop-loss-buffer | 0.02 | Buffer below support level (2%) |
-| --max-hold-days | 60 | Maximum holding period |
-| --trailing-stop | off | Enable trailing stop loss |
-| --trailing-stop-pct | 0.05 | Trailing stop percentage (5%) |
-
-## Configuration Parameters
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| price_tolerance | 4% | Max price difference between bottoms |
-| min_peak_height | 6% | Minimum peak height above bottoms |
-| min_separation | 20 days | Minimum days between bottoms |
-| max_separation | 200 days | Maximum days between bottoms |
-| lookback_days | 504 | Days of history to analyze (~2 years) |
-
-## Pattern Detection Logic
-1. Find swing lows using inverted peak detection
-2. Identify pairs of lows with similar prices (within tolerance)
-3. Confirm a swing high exists between the lows
-4. Calculate pattern strength based on:
-   - Price similarity between bottoms
-   - Peak height above support
-   - Volume confirmation (decreasing)
-   - RSI bullish divergence
-   - Neckline breakout confirmation
-
-## Output Format
-The CSV contains:
-- pattern_id: Unique identifier (SYMBOL_YYYYMMDD_STATUS format)
-- symbol: Stock ticker
-- status: 'FORMING' or 'CONFIRMED' (uppercase)
-- strength_score: Pattern quality (0-100)
-- bottom1_date, bottom1_price: First bottom details
-- peak_date, neckline: Peak/neckline details
-- bottom2_date, bottom2_price: Second bottom details
-- breakout_date: Date when price closed above neckline (CONFIRMED only)
-- current_price: Latest close price
-- target_price: Projected price target (neckline + pattern height)
-- height: Pattern height (neckline - avg_bottom)
-- avg_bottom: Average of both bottom prices
-- separation_days: Trading days between bottoms
-- forming_trigger_level: Price level that would confirm FORMING patterns
-- forming_trigger_reason: How trigger level was computed
-
-## Dependencies
-- yfinance: Stock data download
-- pandas: Data manipulation
-- scipy: Peak detection algorithms
-- matplotlib: Chart generation
-- pandas-ta: Technical indicators (RSI)
-- tqdm: Progress bars
-- requests: HTTP requests
-
-## Recent Changes
-- 2025-12-28: Walk-Forward v3 - Regime Optimization (Task 12)
-  - Updated run_backtest to return diagnostics dict (skip counters, regime days, effective risk)
-  - Added regime_mode (OFF/HARD_SKIP/SOFT_GATE) to parameter grid in build_param_grid()
-  - Expanded grid: regime MA periods, vol thresholds, soft gate multipliers
-  - params_to_backtest_config() handles regime params: mode detection, config updates
-  - run_scan_and_backtest() optionally returns diagnostics (return_diagnostics flag)
-  - run_window_optimization() collects test diagnostics for regime attribution
-  - New CSV columns: test_regime_mode, test_downtrend_days, test_highvol_days, test_regime_hard_skipped, test_forming_reduced_*, test_avg_risk_*
-  - compute_regime_mode_stats() / format_regime_stats() for summary output
-  - Summary includes: regime mode distribution, mean scores by mode, total reduced/skipped counts
-- 2025-12-28: Market Regime Filter with Soft Gating (Task 11)
-  - Added BacktestConfig fields: use_regime_filter, regime_symbol, regime_trend_fast_ma, regime_trend_slow_ma, regime_vol_lookback, regime_vol_high_threshold, regime_soft_gate, regime_downtrend_forming_risk_mult, regime_highvol_forming_risk_mult, regime_highvol_confirmed_risk_mult
-  - compute_regime() helper: MA-based trend (50/200) + ATR% volatility detection
-  - 1-bar shift for no-lookahead guarantee
-  - Soft gating (default): apply risk multipliers instead of hard skip
-    - FORMING in downtrend: 0.85x risk
-    - FORMING in high-vol: 0.70x risk
-    - CONFIRMED in high-vol: 0.85x risk
-  - Hard skip mode available (--regime-soft-gate false)
-  - Regime symbol (QQQ/SPY) excluded from pattern detection/trading
-  - CLI: --use-regime-filter, --regime-symbol, --regime-fast-ma, --regime-slow-ma, --regime-vol-lookback, --regime-vol-high-threshold, --regime-soft-gate, --regime-downtrend-forming-mult, --regime-highvol-forming-mult, --regime-highvol-confirmed-mult
-  - Results (demo 30 stocks): OFF -5.73% DD, Hard Skip -5.24% DD, Soft Gate -5.15% DD (best)
-- 2025-12-28: Correlation & Cluster Caps (Task 10)
-  - Added BacktestConfig fields: use_correlation_caps, corr_lookback_days, max_corr_to_existing, use_cluster_caps, n_clusters, max_positions_per_cluster
-  - Hierarchical clustering (scipy) for symbol grouping
-  - Entry caps: skip if correlation >= 0.8 or cluster already at limit
-  - Skip counters: skipped_corr_cap, skipped_cluster_cap
-  - No-lookahead: correlation computed from data strictly before first signal date
-  - CLI: --use-correlation-caps, --corr-lookback-days, --max-corr-to-existing, --use-cluster-caps, --n-clusters, --max-positions-per-cluster
-- 2025-12-24: Walk-Forward v2 (Task 9)
-  - Expanded parameter grid: portfolio/exit knobs (risk_fraction_forming, max_positions_forming, FORMING exit rules, CONFIRMED partial TP/trailing)
-  - Composite scoring: trade-count penalty, exposure penalty, max DD constraint
-  - Enhanced diagnostics: train_trade_count, train_total_return_pct, test_exposure_days in CSV
-  - Stability summary v2: priority parameter win counts, aggregate stats
-  - New CLI: --objective composite, --min-trades-test 20, --min-exposure-days-test 20, --grid-size-limit 250
-- 2025-12-24: Exit Upgrades (Task 8)
-  - CONFIRMED partial take profit: sell 50% at +1R, continue with remainder
-  - ATR-based trailing stop: 2x ATR distance, activates after +1R or partial TP
-  - FORMING TIGHTEN_STOP mode: alternative to EXIT for no-progress rule
-  - New CLI flags: --confirmed-partial-tp-enabled, --confirmed-trailing-enabled, etc.
-  - No-lookahead: trailing uses prior day close/ATR, partial TP uses current day OHLC
-  - Results: marginal improvement with partial TP (7.62% vs 7.61% baseline)
-- 2025-12-24: Portfolio Rules Engine (Task 7)
-  - Kind-specific risk: CONFIRMED 1% vs FORMING 0.6% per trade
-  - Position caps: max 3 concurrent FORMING positions, 10 total
-  - FORMING exit rules: TIME (60 days), NO_PROGRESS (<0.5R after 20 days)
-  - CONFIRMED breakeven stop at +0.5R MFE
-  - Skip counters track rejected signals by reason
-  - CLI flags: --risk-confirmed, --risk-forming, --max-positions-forming, etc.
-  - Results: Max DD improved from -13% to -5%, FORMING hold days 84→30
-- 2025-12-23: Universe Expansion & Liquidity Filter (Task 6)
-  - New universe.py module with NASDAQ symbol caching and liquidity filtering
-  - get_nasdaq_symbols_cached() downloads and caches NASDAQ symbol list
-  - passes_liquidity_filter() checks min price ($5) and avg dollar volume (20M)
-  - CLI: --universe demo|nasdaq|custom, --min-price, --min-dollar-vol
-  - Outputs liquidity_filter_report.csv with per-symbol diagnostics
-- 2025-12-23: Walk-Forward Optimization (Task 5)
-  - optimize.py with rolling train/test windows
-  - Parameter grid search (~50-150 combinations)
-  - OOS scoring with drawdown constraints
-  - Stability summary tracking which params win most often
-  - Outputs: walkforward_results.csv, walkforward_best_params.json, walkforward_summary.txt
-  - CLI: python optimize.py --symbols AAPL NVDA AMD --train-bars 504 --test-bars 126
-- 2025-12-23: Metrics & Diagnostics (Task 4)
-  - enrich_trades() adds derived columns (win, abs_r, capped_r, year, month)
-  - compute_trade_metrics() for core stats (win_rate, expectancy, profit_factor)
-  - compute_equity_metrics() for equity stats (returns, drawdown, Sharpe)
-  - compute_split_metrics() splits by ALL/FORMING/CONFIRMED
-  - print_metrics_report() for formatted console output
-  - --backtest-v2 flag in main.py outputs metrics.json
-- 2025-12-23: No-Lookahead Backtester (Task 3)
-  - BacktestConfig with risk-based sizing (1% equity risk per trade)
-  - run_backtest() returns (trades_df, equity_df)
-  - Gap-aware exits: gap-through stop/target handled, conservative conflict resolution
-  - Slippage (5 bps) + commission applied to both entry and exit
-  - Trade blotter with: pattern_id, entry_kind, pnl_r_multiple, meta_json
-  - Daily equity curve with drawdown_pct
-  - Overlap control: one_position_per_symbol, max_positions
-  - No lookahead: uses prior close for position valuation during sizing
-- 2025-12-23: Strategy Signal Generation (Task 2)
-  - TradeSignal now includes: pattern_id, entry_kind, trigger_level, risk_per_share, meta
-  - generate_signals() supports both CONFIRMED and FORMING entry types
-  - CONFIRMED: enter next bar open after neckline breakout close
-  - FORMING: enter next bar open after trigger level break (green candle required)
-  - Signal deduplication: one signal per pattern, CONFIRMED preferred
-  - scan_stocks() now has return_price_data option for shared data access
-- 2025-12-23: Pattern Output Hardening
-  - Standardized status values to uppercase (FORMING/CONFIRMED)
-  - Added pattern_id in SYMBOL_YYYYMMDD_STATUS format
-  - Added new fields: height, avg_bottom, separation_days, forming_trigger_level
-  - CONFIRMED patterns now always have breakout_date populated
-  - Aligned confirmation logic with closing breakout detection
-- 2025-12-23: Added complete backtesting strategy system
-  - Created strategy.py with TradeSignal dataclass and generate_signals()
-  - Created backtester.py with Backtest class for bar-by-bar simulation
-  - Created metrics.py with comprehensive performance metrics
-  - Created alerts.py with AlertManager for pattern breakout alerts
-  - Updated main.py with --backtest mode and CLI arguments
-- 2025-12-23: Initial implementation with full feature set
-
-## Architecture Decisions
-- Using scipy.signal.find_peaks for reliable swing detection
-- Pattern strength scoring provides quality ranking
-- Rate limiting (0.1s delay) prevents API blocks
-- Modular design allows easy extension
+## External Dependencies
+- **yfinance**: For downloading historical stock market data.
+- **pandas**: For data manipulation and analysis.
+- **scipy**: Specifically `scipy.signal.find_peaks` for peak detection.
+- **matplotlib**: For generating charts and visualizations.
+- **pandas-ta**: For technical indicators like RSI.
+- **tqdm**: For displaying progress bars during long operations.
+- **requests**: For making HTTP requests, likely used in `universe.py` for symbol lists.
