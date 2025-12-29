@@ -118,14 +118,17 @@ def compute_separation_score(separation_days: int) -> float:
 def compute_breakout_strength_score(
     df: pd.DataFrame,
     breakout_date: Optional[pd.Timestamp],
-    entry_kind: str
+    entry_kind: str,
+    neckline: float = 0.0
 ) -> float:
     """
     Compute breakout candle strength (CONFIRMED patterns only).
     
-    Measures the quality of the breakout candle:
-    - Body size as percentage of price
-    - Green vs red candle
+    Measures the quality of the breakout candle with ATR normalization:
+    - Body size as percentage of price (normalized)
+    - Margin above neckline
+    - ATR penalty to reduce "blow-off" candle bias
+    - Green vs red candle multiplier
     
     For FORMING patterns, returns baseline 0.5.
     
@@ -133,6 +136,7 @@ def compute_breakout_strength_score(
         df: Price DataFrame with OHLCV
         breakout_date: Date of neckline breakout (for CONFIRMED)
         entry_kind: 'CONFIRMED' or 'FORMING'
+        neckline: Neckline price level for margin calculation
     
     Returns:
         Score between 0 and 1
@@ -157,19 +161,42 @@ def compute_breakout_strength_score(
         
         open_price = df['Open'].iloc[breakout_idx]
         close_price = df['Close'].iloc[breakout_idx]
+        high_price = df['High'].iloc[breakout_idx]
+        low_price = df['Low'].iloc[breakout_idx]
         
-        if open_price <= 0:
+        if open_price <= 0 or close_price <= 0:
             return 0.5
         
         body_pct = abs(close_price - open_price) / open_price
+        body_score = clamp(body_pct / 0.02, 0, 1)
+        
+        margin_score = 0.5
+        if neckline > 0:
+            margin_pct = (close_price - neckline) / neckline
+            margin_score = clamp(margin_pct / 0.01, 0, 1)
+        
+        atr_penalty = 0.0
+        if breakout_idx >= 15:
+            tr_values = []
+            for i in range(breakout_idx - 14, breakout_idx):
+                h = df['High'].iloc[i]
+                l = df['Low'].iloc[i]
+                c_prev = df['Close'].iloc[i - 1] if i > 0 else l
+                tr = max(h - l, abs(h - c_prev), abs(l - c_prev))
+                tr_values.append(tr)
+            
+            if tr_values:
+                atr14 = np.mean(tr_values)
+                atr_pct = atr14 / close_price if close_price > 0 else 0
+                atr_penalty = clamp(atr_pct / 0.05, 0, 1)
+        
         is_green = close_price > open_price
+        color_mult = 1.0 if is_green else 0.7
         
-        body_score = clamp(body_pct / 0.03, 0, 1)
-        color_mult = 1.0 if is_green else 0.5
+        breakout_score = (0.5 * body_score + 0.5 * margin_score) * (1 - 0.3 * atr_penalty)
+        breakout_score *= color_mult
         
-        breakout_score = body_score * color_mult
-        
-        return breakout_score
+        return clamp(breakout_score, 0, 1)
         
     except Exception:
         return 0.5
@@ -183,10 +210,12 @@ def compute_volume_score(
     entry_kind: str
 ) -> float:
     """
-    Compute volume signature score.
+    Compute volume signature score with log transform.
     
     For CONFIRMED: Check if breakout volume exceeds 20-day average
+        Uses log transform to reduce extreme spike influence
     For FORMING: Check if volume dried up at bottom2 vs bottom1
+        Uses cap to reduce extreme ratios
     
     Args:
         df: Price DataFrame with OHLCV
@@ -221,7 +250,11 @@ def compute_volume_score(
             breakout_vol = df['Volume'].iloc[breakout_idx]
             vol_ratio = breakout_vol / vol_ma20
             
-            vol_score = clamp((vol_ratio - 1.0) / 1.0, 0, 1)
+            if vol_ratio <= 0:
+                return 0.0
+            
+            log_score = (np.log(vol_ratio) - np.log(1.0)) / np.log(2.0)
+            vol_score = clamp(log_score, 0, 1)
             return vol_score
         
         else:
@@ -237,7 +270,7 @@ def compute_volume_score(
             if vol_bottom1 <= 0:
                 return 0.5
             
-            vol_ratio_bottoms = vol_bottom2 / vol_bottom1
+            vol_ratio_bottoms = min(vol_bottom2 / vol_bottom1, 2.0)
             vol_score = clamp((1.1 - vol_ratio_bottoms) / 0.6, 0, 1)
             
             return vol_score
@@ -249,7 +282,8 @@ def compute_volume_score(
 def compute_trend_context_score(
     df: pd.DataFrame,
     entry_date: pd.Timestamp,
-    ma_period: int = 200
+    ma_period: int = 200,
+    trend_mode: str = "NEUTRAL"
 ) -> float:
     """
     Compute trend context score based on position vs long-term MA.
@@ -260,10 +294,17 @@ def compute_trend_context_score(
         df: Price DataFrame with OHLCV
         entry_date: Date of signal entry
         ma_period: Moving average period (default 200)
+        trend_mode: Scoring mode:
+            - ABOVE_MA200: 1.0 if above MA200, 0.5 if below (original)
+            - BELOW_MA200: 1.0 if below MA200, 0.5 if above (inverted)
+            - NEUTRAL: always 0.5 (removes trend influence)
     
     Returns:
-        Score: 1.0 if above MA200, 0.5 if below
+        Score between 0.5 and 1.0
     """
+    if trend_mode == "NEUTRAL":
+        return 0.5
+    
     try:
         entry_dt = pd.Timestamp(entry_date).date()
         
@@ -279,8 +320,10 @@ def compute_trend_context_score(
         ma200 = df['Close'].iloc[pre_entry_idx-ma_period+1:pre_entry_idx+1].mean()
         close_pre = df['Close'].iloc[pre_entry_idx]
         
-        if close_pre > ma200:
-            return 1.0
+        if trend_mode == "ABOVE_MA200":
+            return 1.0 if close_pre > ma200 else 0.5
+        elif trend_mode == "BELOW_MA200":
+            return 1.0 if close_pre < ma200 else 0.5
         else:
             return 0.5
             
@@ -295,7 +338,9 @@ def compute_pattern_quality_score(
     entry_kind: str,
     weights: Optional[Dict[str, float]] = None,
     price_tolerance: float = 0.04,
-    min_peak_height: float = 0.06
+    min_peak_height: float = 0.06,
+    score_policy: str = "RAW",
+    trend_mode: str = "NEUTRAL"
 ) -> Tuple[float, Dict[str, float]]:
     """
     Compute comprehensive pattern quality score.
@@ -311,6 +356,8 @@ def compute_pattern_quality_score(
         weights: Feature weights (defaults to DEFAULT_WEIGHTS)
         price_tolerance: Config value for symmetry scoring
         min_peak_height: Config value for neckline scoring
+        score_policy: 'RAW' (default) or 'INVERT' (100 - score)
+        trend_mode: 'NEUTRAL', 'ABOVE_MA200', or 'BELOW_MA200'
     
     Returns:
         Tuple of (pattern_score 0-100, feature_dict)
@@ -341,7 +388,7 @@ def compute_pattern_quality_score(
     features['separation'] = compute_separation_score(separation_days)
     
     features['breakout_strength'] = compute_breakout_strength_score(
-        df, breakout_date, entry_kind
+        df, breakout_date, entry_kind, neckline=neckline
     )
     
     features['volume'] = compute_volume_score(
@@ -349,11 +396,14 @@ def compute_pattern_quality_score(
     )
     
     features['trend_context'] = compute_trend_context_score(
-        df, entry_date, ma_period=200
+        df, entry_date, ma_period=200, trend_mode=trend_mode
     )
     
     score_0_1 = sum(weights[k] * features[k] for k in weights.keys())
     pattern_score = round(100 * score_0_1, 2)
+    
+    if score_policy == "INVERT":
+        pattern_score = round(100 - pattern_score, 2)
     
     features_rounded = {k: round(v, 4) for k, v in features.items()}
     

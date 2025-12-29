@@ -506,6 +506,12 @@ def main():
                        help='Keep only top K signals per day by score. 0 = disabled')
     parser.add_argument('--top-k-per-week', type=int, default=0,
                        help='Keep only top K signals per week by score. 0 = disabled')
+    parser.add_argument('--score-policy', type=str, default='RAW',
+                       choices=['RAW', 'INVERT'],
+                       help='Score policy: RAW (default) or INVERT (100 - score)')
+    parser.add_argument('--trend-score-mode', type=str, default='NEUTRAL',
+                       choices=['NEUTRAL', 'ABOVE_MA200', 'BELOW_MA200'],
+                       help='Trend scoring mode: NEUTRAL removes trend influence (default)')
     
     args = parser.parse_args()
     
@@ -626,6 +632,16 @@ def main():
             args.regime_highvol_forming_mult = regime['highvol_forming_mult']
         if regime.get('highvol_confirmed_mult') is not None:
             args.regime_highvol_confirmed_mult = regime['highvol_confirmed_mult']
+        
+        scoring = loaded_config.get('scoring', {})
+        if scoring.get('score_policy') is not None:
+            args.score_policy = scoring['score_policy']
+        if scoring.get('min_pattern_score') is not None:
+            args.min_pattern_score = scoring['min_pattern_score']
+        if scoring.get('top_k_per_day') is not None:
+            args.top_k_per_day = scoring['top_k_per_day']
+        if scoring.get('trend_score_mode') is not None:
+            args.trend_score_mode = scoring['trend_score_mode']
         
         liq = loaded_config.get('liquidity', {})
         if liq.get('min_price') is not None:
@@ -889,6 +905,8 @@ def main():
                 min_pattern_score=0,
                 top_k_per_day=0,
                 top_k_per_week=0,
+                score_policy=args.score_policy,
+                trend_mode=args.trend_score_mode,
             )
             all_signals.extend(signals)
         
@@ -960,7 +978,7 @@ def main():
         split_metrics = compute_split_metrics(enriched_trades, equity_df)
         print_metrics_report(split_metrics)
         
-        from metrics import compute_score_bucket_metrics, compute_threshold_performance
+        from metrics import compute_score_bucket_metrics, compute_threshold_performance, compute_feature_attribution_report
         if 'pattern_score' in trades_df.columns and trades_df['pattern_score'].notna().any():
             bucket_report = compute_score_bucket_metrics(trades_df)
             if not bucket_report.empty:
@@ -983,6 +1001,23 @@ def main():
                     print(f"Min score {int(row['min_score']):>3}: {int(row['trade_count']):3d} trades, "
                           f"WR={row['win_rate']:5.1f}%, AvgR={row['avg_r']:+.2f}, "
                           f"PnL=${row['total_pnl']:,.0f}")
+            
+            attr_report = compute_feature_attribution_report(trades_df)
+            if not attr_report.empty:
+                attr_report.to_csv('outputs/feature_attribution_report.csv', index=False)
+                print("\n" + "-" * 50)
+                print("FEATURE ATTRIBUTION SUMMARY")
+                print("-" * 50)
+                pos_corr = attr_report[attr_report['corr_to_r'] > 0].nlargest(2, 'corr_to_r')
+                neg_corr = attr_report[attr_report['corr_to_r'] < 0].nsmallest(2, 'corr_to_r')
+                if not pos_corr.empty:
+                    print("Top 2 positively correlated with R:")
+                    for _, row in pos_corr.iterrows():
+                        print(f"  {row['feature']:>15}: corr={row['corr_to_r']:+.3f}")
+                if not neg_corr.empty:
+                    print("Top 2 negatively correlated with R:")
+                    for _, row in neg_corr.iterrows():
+                        print(f"  {row['feature']:>15}: corr={row['corr_to_r']:+.3f}")
         
         with open('outputs/metrics.json', 'w') as f:
             serializable_metrics = {}
@@ -997,6 +1032,7 @@ def main():
         if 'pattern_score' in trades_df.columns:
             print("  - outputs/score_bucket_report.csv")
             print("  - outputs/score_threshold_report.csv")
+            print("  - outputs/feature_attribution_report.csv")
         
         cache_stats = get_cache_stats('data/price_cache')
         

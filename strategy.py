@@ -68,6 +68,8 @@ def generate_signals(
     min_pattern_score: float = 0.0,
     top_k_per_day: int = 0,
     top_k_per_week: int = 0,
+    score_policy: str = "RAW",
+    trend_mode: str = "NEUTRAL",
 ) -> List[TradeSignal]:
     """
     Generate trading signals from detected patterns.
@@ -105,7 +107,9 @@ def generate_signals(
             compute_scores=compute_scores,
             score_weights=score_weights,
             price_tolerance=price_tolerance,
-            min_peak_height=min_peak_height
+            min_peak_height=min_peak_height,
+            score_policy=score_policy,
+            trend_mode=trend_mode
         )
         if signal and signal.pattern_id not in seen_pattern_ids:
             signals.append(signal)
@@ -122,7 +126,9 @@ def generate_signals(
             compute_scores=compute_scores,
             score_weights=score_weights,
             price_tolerance=price_tolerance,
-            min_peak_height=min_peak_height
+            min_peak_height=min_peak_height,
+            score_policy=score_policy,
+            trend_mode=trend_mode
         )
         if signal:
             signals.append(signal)
@@ -146,7 +152,9 @@ def _generate_confirmed_signal(
     compute_scores: bool = True,
     score_weights: Optional[Dict[str, float]] = None,
     price_tolerance: float = 0.04,
-    min_peak_height: float = 0.06
+    min_peak_height: float = 0.06,
+    score_policy: str = "RAW",
+    trend_mode: str = "NEUTRAL"
 ) -> Optional[TradeSignal]:
     """Generate signal for a CONFIRMED pattern."""
     breakout_date = pattern.get('breakout_date')
@@ -187,7 +195,9 @@ def _generate_confirmed_signal(
             entry_kind='CONFIRMED',
             weights=score_weights,
             price_tolerance=price_tolerance,
-            min_peak_height=min_peak_height
+            min_peak_height=min_peak_height,
+            score_policy=score_policy,
+            trend_mode=trend_mode
         )
     
     avg_bottom = pattern.get('avg_bottom') or ((bottom1_price + bottom2_price) / 2)
@@ -202,6 +212,8 @@ def _generate_confirmed_signal(
         'score_features': score_features,
         'pattern_status': pattern.get('status'),
         'neckline_rise_pct': round(neckline_rise_pct, 4),
+        'pattern_score_policy': score_policy,
+        'trend_score_mode': trend_mode,
     }
     
     return TradeSignal(
@@ -227,7 +239,9 @@ def _generate_forming_signal(
     compute_scores: bool = True,
     score_weights: Optional[Dict[str, float]] = None,
     price_tolerance: float = 0.04,
-    min_peak_height: float = 0.06
+    min_peak_height: float = 0.06,
+    score_policy: str = "RAW",
+    trend_mode: str = "NEUTRAL"
 ) -> Optional[TradeSignal]:
     """Generate signal for a FORMING pattern."""
     trigger_level = pattern.get('forming_trigger_level')
@@ -292,7 +306,9 @@ def _generate_forming_signal(
             entry_kind='FORMING',
             weights=score_weights,
             price_tolerance=price_tolerance,
-            min_peak_height=min_peak_height
+            min_peak_height=min_peak_height,
+            score_policy=score_policy,
+            trend_mode=trend_mode
         )
     
     avg_bottom = pattern.get('avg_bottom') or ((bottom1_price + bottom2_price) / 2)
@@ -307,6 +323,8 @@ def _generate_forming_signal(
         'score_features': score_features,
         'pattern_status': pattern.get('status'),
         'neckline_rise_pct': round(neckline_rise_pct, 4),
+        'pattern_score_policy': score_policy,
+        'trend_score_mode': trend_mode,
     }
     
     return TradeSignal(
@@ -336,6 +354,8 @@ def generate_signals_from_scan_results(
     min_pattern_score: float = 0.0,
     top_k_per_day: int = 0,
     top_k_per_week: int = 0,
+    score_policy: str = "RAW",
+    trend_mode: str = "NEUTRAL",
 ) -> List[TradeSignal]:
     """
     Generate signals from scan results DataFrame.
@@ -378,6 +398,8 @@ def generate_signals_from_scan_results(
             min_pattern_score=0,
             top_k_per_day=0,
             top_k_per_week=0,
+            score_policy=score_policy,
+            trend_mode=trend_mode,
         )
         all_signals.extend(signals)
     

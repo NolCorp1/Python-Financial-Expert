@@ -141,6 +141,56 @@ Each trade includes:
 - `pattern_score`: Overall score (0-100)
 - `score_symmetry`, `score_neckline`, `score_separation`, etc.: Individual feature scores (0-1)
 
+## Score Inversion Fix (Task 16)
+
+When high scores underperform (score inversion), use these diagnostic and fix tools.
+
+### Feature Attribution Report
+After backtest, `outputs/feature_attribution_report.csv` shows per-feature correlation with outcomes:
+- `corr_to_r`: Correlation with R-multiple (negative = feature hurts performance)
+- `corr_to_win`: Correlation with win rate
+- Quintile breakdown: Performance at each feature quintile
+
+### Score Policy (Diagnostic)
+```bash
+# Test if inverting scores improves performance (diagnostic only)
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --score-policy INVERT
+```
+- RAW (default): Use scores as computed
+- INVERT: Score = 100 - computed_score (flips bucket performance)
+
+### Trend Scoring Mode
+```bash
+# NEUTRAL (default): Removes trend influence - safest for inverted scores
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --trend-score-mode NEUTRAL
+
+# Test if double bottoms work better below MA200
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --trend-score-mode BELOW_MA200
+```
+
+### Improved Breakout/Volume Scoring
+- **Breakout**: Now uses ATR normalization + neckline margin (reduces blow-off candle bias)
+- **Volume**: Uses log transform (reduces extreme spike influence)
+
+### Console Summary
+After backtest, top positive/negative correlated features are printed:
+```
+FEATURE ATTRIBUTION SUMMARY
+--------------------------------------------------
+Top 2 positively correlated with R:
+        breakout: corr=+0.019
+Top 2 negatively correlated with R:
+        symmetry: corr=-0.198
+           trend: corr=-0.237
+```
+
+### Walk-Forward Integration
+Scoring parameters are included in optimization grid:
+- `score_policy`: RAW, INVERT
+- `min_pattern_score`: 0, 40, 50, 60
+- `top_k_per_day`: 0, 2, 3, 5
+- `trend_score_mode`: NEUTRAL, BELOW_MA200, ABOVE_MA200
+
 ## Overview
 A comprehensive Python program that scans for double bottom ("W") chart patterns in NASDAQ-listed stocks using historical price data from yfinance. The scanner uses algorithmic pattern detection with scipy, RSI divergence confirmation, and volume analysis. Includes a full backtesting engine to evaluate strategy performance.
 

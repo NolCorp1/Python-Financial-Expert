@@ -161,11 +161,19 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
         'confirmed_trailing_atr_mult': [1.5, 2.0, 2.5],
     }
     
+    scoring_params = {
+        'score_policy': ['RAW', 'INVERT'],
+        'min_pattern_score': [0, 40, 50, 60],
+        'top_k_per_day': [0, 2, 3, 5],
+        'trend_score_mode': ['NEUTRAL', 'BELOW_MA200', 'ABOVE_MA200'],
+    }
+    
     all_params = {}
     all_params.update(detection_params)
     all_params.update(portfolio_params)
     all_params.update(forming_exit_params)
     all_params.update(confirmed_exit_params)
+    all_params.update(scoring_params)
     
     keys = list(all_params.keys())
     values = [all_params[k] for k in keys]
@@ -382,7 +390,15 @@ def run_scan_and_backtest(
             pattern['symbol'] = symbol
         
         if patterns:
-            signals = generate_signals(df, patterns)
+            signals = generate_signals(
+                df, patterns,
+                compute_scores=True,
+                score_policy=params.get('score_policy', 'RAW'),
+                trend_mode=params.get('trend_score_mode', 'NEUTRAL'),
+                min_pattern_score=params.get('min_pattern_score', 0),
+                top_k_per_day=params.get('top_k_per_day', 0),
+                top_k_per_week=0,
+            )
             all_signals.extend(signals)
     
     if not all_signals:
@@ -1016,6 +1032,13 @@ def build_strategy_config(
             'downtrend_forming_mult': best_params.get('regime_downtrend_forming_mult', 0.85),
             'highvol_forming_mult': best_params.get('regime_highvol_forming_mult', 0.70),
             'highvol_confirmed_mult': best_params.get('regime_highvol_confirmed_mult', 0.85),
+        },
+        
+        'scoring': {
+            'score_policy': best_params.get('score_policy', 'RAW'),
+            'min_pattern_score': best_params.get('min_pattern_score', 0),
+            'top_k_per_day': best_params.get('top_k_per_day', 0),
+            'trend_score_mode': best_params.get('trend_score_mode', 'NEUTRAL'),
         },
         
         'liquidity': {

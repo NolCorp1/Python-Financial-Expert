@@ -534,6 +534,97 @@ def drawdown_attribution(trades_df: pd.DataFrame, equity_df: pd.DataFrame) -> pd
     return pd.DataFrame(results)
 
 
+def compute_feature_attribution_report(trades_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute feature attribution report showing per-feature correlation with outcomes.
+    
+    For each scoring feature, computes:
+    - Correlation with R-multiple
+    - Correlation with win/loss
+    - Mean R by quintile
+    - Win rate by quintile
+    
+    Args:
+        trades_df: DataFrame with trade results including score feature columns
+        
+    Returns:
+        DataFrame with attribution stats per feature
+    """
+    feature_cols = [
+        'score_symmetry', 'score_neckline', 'score_separation',
+        'score_breakout', 'score_volume', 'score_trend'
+    ]
+    
+    actual_cols = [c for c in feature_cols if c in trades_df.columns]
+    
+    if trades_df.empty or not actual_cols:
+        return pd.DataFrame()
+    
+    df = trades_df.copy()
+    
+    if 'win' not in df.columns:
+        pnl_col = 'pnl_dollars' if 'pnl_dollars' in df.columns else 'pnl'
+        df['win'] = df[pnl_col] > 0 if pnl_col in df.columns else False
+    
+    r_col = 'pnl_r_multiple' if 'pnl_r_multiple' in df.columns else None
+    
+    results = []
+    
+    for col in actual_cols:
+        feature_name = col.replace('score_', '')
+        
+        valid_df = df.dropna(subset=[col])
+        if len(valid_df) < 5:
+            continue
+        
+        corr_to_r = np.nan
+        corr_to_win = np.nan
+        
+        if r_col and r_col in valid_df.columns:
+            try:
+                corr_to_r = valid_df[col].corr(valid_df[r_col])
+            except Exception:
+                pass
+        
+        try:
+            corr_to_win = valid_df[col].corr(valid_df['win'].astype(float))
+        except Exception:
+            pass
+        
+        mean_r = valid_df[r_col].mean() if r_col else np.nan
+        
+        row = {
+            'feature': feature_name,
+            'corr_to_r': round(corr_to_r, 4) if not np.isnan(corr_to_r) else np.nan,
+            'corr_to_win': round(corr_to_win, 4) if not np.isnan(corr_to_win) else np.nan,
+            'mean_r': round(mean_r, 4) if not np.isnan(mean_r) else np.nan,
+            'n': len(valid_df),
+        }
+        
+        try:
+            valid_df['quintile'] = pd.qcut(valid_df[col], 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+        except ValueError:
+            try:
+                valid_df['quintile'] = pd.cut(valid_df[col], 5, labels=[1, 2, 3, 4, 5])
+            except Exception:
+                valid_df['quintile'] = 1
+        
+        for q in [1, 2, 3, 4, 5]:
+            q_df = valid_df[valid_df['quintile'] == q]
+            if len(q_df) > 0:
+                row[f'quintile_{q}_mean_r'] = round(q_df[r_col].mean(), 4) if r_col else np.nan
+                row[f'quintile_{q}_win_rate'] = round(q_df['win'].mean() * 100, 1)
+                row[f'quintile_{q}_n'] = len(q_df)
+            else:
+                row[f'quintile_{q}_mean_r'] = np.nan
+                row[f'quintile_{q}_win_rate'] = np.nan
+                row[f'quintile_{q}_n'] = 0
+        
+        results.append(row)
+    
+    return pd.DataFrame(results)
+
+
 def print_metrics_report(metrics: Dict[str, Dict[str, Any]]) -> None:
     """
     Print formatted metrics report with ALL / FORMING / CONFIRMED sections.
