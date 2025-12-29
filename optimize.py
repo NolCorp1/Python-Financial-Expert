@@ -2015,7 +2015,15 @@ def run_validation(args):
         print("=" * 60)
         
         from metrics import compute_recycling_effectiveness_metrics
-        from backtester import run_backtest_v2
+        
+        stress_detection_cfg = {
+            'low_tolerance': detection_config.get('price_tolerance', 0.04),
+            'neckline_min_rise': detection_config.get('min_peak_height', 0.06),
+            'min_sep': detection_config.get('min_separation', 20),
+            'max_sep': detection_config.get('max_separation', 200),
+            'stop_loss_buffer': detection_config.get('stop_loss_buffer', 0.02),
+            'breakout_buffer': detection_config.get('breakout_buffer', 0.002),
+        }
         
         backtest_cfg = BacktestConfig(
             initial_capital=portfolio_config.get('initial_capital', 100000),
@@ -2038,14 +2046,14 @@ def run_validation(args):
         for symbol, df in price_data.items():
             if symbol in ['QQQ', 'SPY']:
                 continue
-            patterns = detect_double_bottom(df, detection_cfg)
+            patterns = detect_double_bottom(df, stress_detection_cfg)
             if patterns:
                 signals = generate_signals(
                     df=df,
                     patterns=patterns,
-                    stop_loss_buffer=detection_cfg.get('stop_loss_buffer', 0.02),
-                    price_tolerance=detection_cfg.get('low_tolerance', 0.04),
-                    min_peak_height=detection_cfg.get('neckline_min_rise', 0.06),
+                    stop_loss_buffer=stress_detection_cfg.get('stop_loss_buffer', 0.02),
+                    price_tolerance=stress_detection_cfg.get('low_tolerance', 0.04),
+                    min_peak_height=stress_detection_cfg.get('neckline_min_rise', 0.06),
                     score_policy=scoring_config.get('score_policy', 'RAW'),
                     trend_mode=scoring_config.get('trend_score_mode', 'NEUTRAL'),
                     min_pattern_score=scoring_config.get('min_pattern_score', 0),
@@ -2058,7 +2066,7 @@ def run_validation(args):
         
         if all_signals:
             signals_by_symbol = group_signals_by_symbol(all_signals)
-            stress_trades_df, _ = run_backtest_v2(signals_by_symbol, price_data, backtest_cfg)
+            stress_trades_df, _ = run_backtest(signals_by_symbol, price_data, backtest_cfg)
             
             if not stress_trades_df.empty:
                 recycling_eff = compute_recycling_effectiveness_metrics(stress_trades_df)
