@@ -1,0 +1,167 @@
+Task 15 — Pattern Quality Scoring + Top-K Selection (Increase Alpha, Reduce Noise)
+==================================================================================
+Objective
+---------
+Improve profitability by ranking detected patterns and only trading the highest
+quality setups.
+
+We will:
+1) Compute a PatternQualityScore per pattern/signal using only pre-entry data
+2) Add optional filters (min score threshold, top-K per day/week)
+3) Track attribution: performance by score decile, and per-feature importance
+4) Integrate scoring into optimize/validate workflow (later Task 16)
+
+This task should increase expectancy and reduce drawdowns by avoiding low-quality
+double bottoms that pass tolerance rules but don’t have real edge.
+
+No-lookahead Requirements
+-------------------------
+- All scoring features must be computed using data available up to the ENTRY DATE - 1.
+- For CONFIRMED: up to breakout_date - 1 (since entry is next open)
+- For FORMING: up to trigger_cross_date - 1
+
+Files to Edit
+-------------
+- double_bottom_scanner.py (or wherever patterns are finalized) OR strategy.py
+- strategy.py (signal generation should attach score + features)
+- main.py (CLI flags)
+- metrics.py (score bucket reporting)
+- (optional) optimize.py (Task 16 will tune thresholds)
+
+1) Define Score Feature Set (v1)
+--------------------------------
+Compute these features for each pattern:
+
+A) Symmetry / Bottom Similarity
+- bottom_diff_pct = abs(bottom1 - bottom2) / avg(bottoms)
+- symmetry_score = clamp(1 - bottom_diff_pct / tolerance, 0..1)
+
+B) Neckline Strength
+- neckline_rise_pct = (neckline - avg_bottom) / avg_bottom
+- neckline_score = clamp((neckline_rise_pct - min_rise) / (2*min_rise), 0..1)
+
+C) Separation Quality
+- sep_days = separation_days
+- prefer 30–120 days; penalize too short/too long
+- sep_score = 1 - min(|sep-75| / 75, 1)
+
+D) Breakout Candle Strength (CONFIRMED only, else 0.5 baseline)
+For breakout day (breakout_date):
+- body_pct = abs(close-open) / open
+- green = close > open
+- breakout_strength_score = clamp(body_pct / 0.03, 0..1) * (1 if green else 0.5)
+
+E) Volume Signature
+Goal: volume confirmation without overfitting.
+Compute using rolling averages:
+- vol_ma20 = rolling mean volume 20
+- vol_ratio_breakout = volume_breakout / vol_ma20 (CONFIRMED only)
+- vol_score_confirmed = clamp((vol_ratio_breakout - 1.0) / 1.0, 0..1)
+
+For FORMING:
+- compare volume at bottom2 vs bottom1:
+  vol_ratio_bottoms = vol_bottom2 / vol_bottom1
+  prefer <= 1 (drying up volume)
+  vol_score_forming = clamp((1.1 - vol_ratio_bottoms) / 0.6, 0..1)
+
+F) Trend Context (pre-entry)
+- 50d MA slope or price vs MA200:
+  trend_ok = close_pre_entry > MA200_pre_entry
+  trend_score = 1.0 if trend_ok else 0.5
+
+ATR normalization (optional but good):
+- Use ATR% to normalize and avoid extreme volatility names dominating.
+
+2) Combine Into Final Score (0–100)
+-----------------------------------
+Compute a weighted score:
+
+Weights (v1 defaults):
+- symmetry: 0.20
+- neckline: 0.20
+- separation: 0.15
+- breakout_strength: 0.15
+- volume: 0.20
+- trend_context: 0.10
+
+score_0_1 = sum(w_i * feature_i)
+pattern_score = round(100 * score_0_1, 2)
+
+Store:
+- pattern_score
+- score_features_json (dict of each feature component)
+
+3) Integrate Into Signals + Backtester
+--------------------------------------
+In strategy signal generation:
+- attach pattern_score to TradeSignal
+- attach score_features into meta dict
+
+In backtester:
+- include pattern_score in trades_df
+- include score_features_json (or flatten key features into columns)
+
+4) Add Trading Filters (Configurable)
+-------------------------------------
+Add CLI args in main.py/backtest config:
+
+- --min-pattern-score 0           # default no filter
+- --top-k-per-day 0               # 0 means disabled
+- --top-k-per-week 0              # optional alternative to per-day
+- --ranking-key pattern_score      # future-proof
+
+Rules:
+- If min-pattern-score > 0: drop signals below threshold
+- If top-k-per-day > 0:
+    group signals by entry_date, keep top K by score
+    tie-break by:
+      1) CONFIRMED over FORMING
+      2) higher neckline_rise_pct
+- Ensure dedup rules still apply (one per pattern_id; confirmed preferred)
+
+5) Metrics: Score Decile Attribution
+------------------------------------
+In metrics.py add:
+
+- compute_score_bucket_metrics(trades_df, buckets=10)
+Outputs:
+- bucket, trade_count, win_rate, avg_r, profit_factor, total_pnl
+
+Also output:
+- performance for:
+  score >= 60, 70, 80
+  top-k vs no top-k
+
+Write to:
+- outputs/score_bucket_report.csv
+
+6) Acceptance Criteria
+----------------------
+A) Score computed for every signal (FORMING and CONFIRMED)
+B) No-lookahead: all score inputs come from <= entry_date-1
+C) Backtest runs and outputs pattern_score in trades.csv
+D) score_bucket_report.csv shows monotonic improvement (ideally higher scores -> higher expectancy)
+E) Filters work:
+   - min-pattern-score reduces trades and ideally improves expectancy
+   - top-k-per-day prevents overtrading
+
+7) Manual Test Plan
+-------------------
+1) Baseline:
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --min-pattern-score 0
+
+2) Threshold test:
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --min-pattern-score 70
+
+3) Top-k test:
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --top-k-per-day 3
+
+Compare:
+- return, max DD, expectancy, profit factor
+- score_bucket_report.csv should show better performance in higher buckets
+
+Non-Goals
+---------
+- ML model (XGBoost) scoring (that’s Task 17+)
+- Optimizing weights (Task 16)
+- Live execution changes
