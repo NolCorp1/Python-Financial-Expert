@@ -925,6 +925,166 @@ def find_overall_best_params(
     return json.loads(best['params_key']), best['mean_score'], robustness_stats
 
 
+def compute_score_policy_wf_summary(
+    window_results: List[Dict[str, Any]]
+) -> pd.DataFrame:
+    """
+    Aggregate walk-forward results by scoring knobs.
+    
+    Groups by: score_policy, trend_score_mode, min_pattern_score, top_k_per_day
+    
+    Args:
+        window_results: List of window result dicts from walk-forward
+        
+    Returns:
+        DataFrame with aggregated statistics by scoring configuration
+    """
+    scoring_knobs = ['score_policy', 'trend_score_mode', 'min_pattern_score', 'top_k_per_day']
+    
+    grouped_data = defaultdict(lambda: {
+        'scores': [],
+        'returns': [],
+        'dds': [],
+        'trades': [],
+        'exposure_days': []
+    })
+    
+    for result in window_results:
+        params = result.get('best_params')
+        if params is None:
+            continue
+        
+        key = tuple(params.get(k, 'N/A') for k in scoring_knobs)
+        test_score = result.get('test_score', float('-inf'))
+        
+        grouped_data[key]['scores'].append(test_score)
+        grouped_data[key]['returns'].append(result.get('test_total_return_pct', np.nan))
+        grouped_data[key]['dds'].append(result.get('test_max_dd_pct', np.nan))
+        grouped_data[key]['trades'].append(result.get('test_trade_count', 0))
+        grouped_data[key]['exposure_days'].append(result.get('test_exposure_days', 0))
+    
+    total_windows = len(window_results)
+    rows = []
+    
+    for key, data in grouped_data.items():
+        valid_scores = [s for s in data['scores'] if s != float('-inf') and not np.isnan(s)]
+        valid_returns = [r for r in data['returns'] if not np.isnan(r)]
+        valid_dds = [d for d in data['dds'] if not np.isnan(d)]
+        
+        windows_passing = len(valid_scores)
+        pass_rate = windows_passing / total_windows if total_windows > 0 else 0
+        
+        row = {
+            'score_policy': key[0],
+            'trend_score_mode': key[1],
+            'min_pattern_score': key[2],
+            'top_k_per_day': key[3],
+            'windows_total': total_windows,
+            'windows_passing': windows_passing,
+            'pass_rate': round(pass_rate, 4),
+            'mean_test_score': round(np.mean(valid_scores), 4) if valid_scores else np.nan,
+            'median_test_score': round(np.median(valid_scores), 4) if valid_scores else np.nan,
+            'mean_test_return_pct': round(np.mean(valid_returns), 2) if valid_returns else np.nan,
+            'median_test_return_pct': round(np.median(valid_returns), 2) if valid_returns else np.nan,
+            'mean_test_max_dd_pct': round(np.mean(valid_dds), 2) if valid_dds else np.nan,
+            'median_test_max_dd_pct': round(np.median(valid_dds), 2) if valid_dds else np.nan,
+            'mean_test_trade_count': round(np.mean(data['trades']), 1) if data['trades'] else 0,
+            'mean_test_exposure_days': round(np.mean(data['exposure_days']), 1) if data['exposure_days'] else 0,
+        }
+        rows.append(row)
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(['pass_rate', 'median_test_score'], ascending=[False, False])
+    
+    return df
+
+
+def select_best_scoring_defaults(
+    summary_df: pd.DataFrame,
+    min_pass_rate: float = 0.60,
+    min_median_test_score: float = 0.0
+) -> Dict[str, Any]:
+    """
+    Select best scoring defaults using stability-first rules.
+    
+    Rules:
+    1. require pass_rate >= min_pass_rate
+    2. require median_test_score >= min_median_test_score
+    3. maximize median_test_score
+    4. tie-breakers:
+       a) minimize median_test_max_dd_pct
+       b) maximize median_test_return_pct
+       c) prefer simpler rules (min_score=0 over 60 if similar)
+    
+    Args:
+        summary_df: DataFrame from compute_score_policy_wf_summary
+        min_pass_rate: Minimum pass rate required
+        min_median_test_score: Minimum median test score required
+        
+    Returns:
+        Dict with chosen defaults and reasoning
+    """
+    result = {
+        'chosen_defaults': {
+            'score_policy': 'RAW',
+            'trend_score_mode': 'NEUTRAL',
+            'min_pattern_score': 0,
+            'top_k_per_day': 0,
+        },
+        'reasoning': {
+            'pass_rate': 0,
+            'median_score': 0,
+            'median_dd': 0,
+            'median_return': 0,
+            'trade_count': 0,
+            'selection_method': 'default_fallback'
+        },
+        'warning': None
+    }
+    
+    if summary_df.empty:
+        result['warning'] = 'No walk-forward results available'
+        return result
+    
+    candidates = summary_df[
+        (summary_df['pass_rate'] >= min_pass_rate) &
+        (summary_df['median_test_score'] >= min_median_test_score)
+    ].copy()
+    
+    if candidates.empty:
+        candidates = summary_df.copy()
+        result['warning'] = 'No candidates met stability criteria, using best available'
+        result['reasoning']['selection_method'] = 'relaxed_gating'
+    else:
+        result['reasoning']['selection_method'] = 'stability_first'
+    
+    candidates = candidates.sort_values(
+        ['median_test_score', 'median_test_max_dd_pct', 'median_test_return_pct', 'min_pattern_score'],
+        ascending=[False, True, False, True]
+    )
+    
+    best = candidates.iloc[0]
+    
+    result['chosen_defaults'] = {
+        'score_policy': best['score_policy'],
+        'trend_score_mode': best['trend_score_mode'],
+        'min_pattern_score': int(best['min_pattern_score']) if pd.notna(best['min_pattern_score']) else 0,
+        'top_k_per_day': int(best['top_k_per_day']) if pd.notna(best['top_k_per_day']) else 0,
+    }
+    
+    result['reasoning'] = {
+        'pass_rate': round(best['pass_rate'], 4),
+        'median_score': round(best['median_test_score'], 4) if pd.notna(best['median_test_score']) else 0,
+        'median_dd': round(best['median_test_max_dd_pct'], 2) if pd.notna(best['median_test_max_dd_pct']) else 0,
+        'median_return': round(best['median_test_return_pct'], 2) if pd.notna(best['median_test_return_pct']) else 0,
+        'trade_count': round(best['mean_test_trade_count'], 1) if pd.notna(best['mean_test_trade_count']) else 0,
+        'selection_method': result['reasoning']['selection_method']
+    }
+    
+    return result
+
+
 def build_strategy_config(
     best_params: Dict[str, Any],
     args,
@@ -1038,6 +1198,7 @@ def build_strategy_config(
             'score_policy': best_params.get('score_policy', 'RAW'),
             'min_pattern_score': best_params.get('min_pattern_score', 0),
             'top_k_per_day': best_params.get('top_k_per_day', 0),
+            'top_k_per_week': best_params.get('top_k_per_week', 0),
             'trend_score_mode': best_params.get('trend_score_mode', 'NEUTRAL'),
         },
         
@@ -1422,8 +1583,21 @@ def run_walkforward_optimization(
 
 
 def run_validation(args):
-    """Run validation on best config file."""
-    import subprocess
+    """
+    Run enhanced validation on best config file.
+    
+    Outputs:
+    - validation_score_bucket_report.csv
+    - validation_feature_attribution_report.csv
+    - validation_scoring_recommendation.txt
+    - Comparison of scoring-enabled vs disabled
+    """
+    import random as _random
+    from metrics import (
+        compute_trade_metrics, compute_equity_metrics, compute_split_metrics,
+        compute_score_bucket_metrics, compute_threshold_performance,
+        compute_feature_attribution_report, check_score_monotonicity
+    )
     
     config_path = args.validate_config
     if not os.path.exists(config_path):
@@ -1435,31 +1609,304 @@ def run_validation(args):
         config = json.load(f)
     
     print("\n" + "=" * 60)
-    print("VALIDATION MODE")
+    print("ENHANCED VALIDATION MODE")
     print("=" * 60)
     print(f"Config file: {config_path}")
     print(f"Generated: {config.get('meta', {}).get('generated_at', 'unknown')}")
     print(f"Stocks: {args.validate_stocks}")
     print("=" * 60)
     
-    cmd = [
-        'python', 'main.py',
-        '--config', config_path,
-        '--universe', 'nasdaq',
-        '--max-stocks', str(args.validate_stocks),
-        '--backtest-v2'
+    all_symbols = get_nasdaq_symbols_cached(limit=None)
+    all_symbols = sorted(all_symbols)
+    
+    if args.symbols_seed is not None:
+        _random.seed(args.symbols_seed)
+        symbols = sorted(_random.sample(all_symbols, min(args.validate_stocks, len(all_symbols))))
+    else:
+        symbols = all_symbols[:args.validate_stocks]
+    
+    print(f"\nDownloading data for {len(symbols)} symbols...")
+    
+    start_date, end_date = compute_required_date_range(504 + 126)
+    raw_price_data = preload_price_data(
+        symbols + ['QQQ', 'SPY'],
+        start_date,
+        end_date,
+        cache_dir=args.price_cache_dir,
+        batch_size=args.download_batch_size
+    )
+    
+    price_data = {}
+    liquidity_config = {
+        'min_price': args.min_price,
+        'min_avg_dollar_vol': args.min_dollar_vol,
+        'use_filter': not args.disable_liquidity_filter,
+        'window': args.liquidity_window,
+    }
+    
+    for symbol in symbols:
+        if symbol not in raw_price_data or raw_price_data[symbol] is None:
+            continue
+        df = raw_price_data[symbol]
+        if len(df) < 200:
+            continue
+        if not args.disable_liquidity_filter:
+            passed, _ = passes_liquidity_filter(df, **{k: v for k, v in liquidity_config.items() if k != 'use_filter'})
+            if not passed:
+                continue
+        price_data[symbol] = df
+    
+    for regime_sym in ['QQQ', 'SPY']:
+        if regime_sym in raw_price_data and raw_price_data[regime_sym] is not None:
+            price_data[regime_sym] = raw_price_data[regime_sym]
+    
+    print(f"Valid symbols after filtering: {len([s for s in price_data if s not in ['QQQ', 'SPY']])}")
+    
+    scoring_config = config.get('scoring', {})
+    detection_config = config.get('detection', {})
+    portfolio_config = config.get('portfolio', {})
+    exits_config = config.get('exits', {})
+    regime_config = config.get('regime', {})
+    
+    def run_backtest_with_scoring(use_scoring: bool) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, Any]]:
+        """Run backtest with or without scoring filters."""
+        if use_scoring:
+            min_score = scoring_config.get('min_pattern_score', 0)
+            top_k = scoring_config.get('top_k_per_day', 0)
+            score_policy = scoring_config.get('score_policy', 'RAW')
+            trend_mode = scoring_config.get('trend_score_mode', 'NEUTRAL')
+        else:
+            min_score = 0
+            top_k = 0
+            score_policy = 'RAW'
+            trend_mode = 'NEUTRAL'
+        
+        detection_cfg = {
+            'low_tolerance': detection_config.get('price_tolerance', 0.04),
+            'neckline_min_rise': detection_config.get('min_peak_height', 0.06),
+            'min_sep': detection_config.get('min_separation', 20),
+            'max_sep': detection_config.get('max_separation', 200),
+            'stop_loss_buffer': detection_config.get('stop_loss_buffer', 0.02),
+            'breakout_buffer': detection_config.get('breakout_buffer', 0.002),
+        }
+        
+        all_signals = []
+        for symbol, df in price_data.items():
+            if symbol in ['QQQ', 'SPY']:
+                continue
+            
+            patterns = detect_double_bottom(df, detection_cfg)
+            if not patterns:
+                continue
+            
+            signals = generate_signals(
+                df=df,
+                patterns=patterns,
+                stop_loss_buffer=detection_cfg.get('stop_loss_buffer', 0.02),
+                price_tolerance=detection_cfg.get('low_tolerance', 0.04),
+                min_peak_height=detection_cfg.get('neckline_min_rise', 0.06),
+                score_policy=score_policy,
+                trend_mode=trend_mode,
+                min_pattern_score=min_score,
+                top_k_per_day=top_k,
+                top_k_per_week=0
+            )
+            
+            for sig in signals:
+                sig.symbol = symbol
+            all_signals.extend(signals)
+        
+        if not all_signals:
+            return pd.DataFrame(), {}, {}
+        
+        backtest_cfg = BacktestConfig(
+            initial_capital=portfolio_config.get('initial_capital', 100000),
+            risk_fraction_per_trade=portfolio_config.get('risk_fraction_confirmed', 0.01),
+            max_positions=portfolio_config.get('max_positions_total', 10),
+            one_position_per_symbol=True,
+            slippage_bps=portfolio_config.get('slippage_bps', 5.0),
+            commission_per_trade=portfolio_config.get('commission_per_trade', 1.0)
+        )
+        
+        signals_by_symbol = group_signals_by_symbol(all_signals)
+        
+        trades_df, equity_df = run_backtest(signals_by_symbol, price_data, backtest_cfg)
+        
+        if trades_df.empty:
+            return pd.DataFrame(), {}, {}
+        
+        trades_df['pnl_dollars'] = trades_df.get('pnl', 0)
+        trades_df['pnl_r_multiple'] = trades_df.get('pnl_r', 0)
+        
+        class MockResult:
+            def __init__(self, trades_df, equity_df, cfg):
+                self.trades = []
+                self.equity_curve = equity_df
+                self.initial_capital = cfg.initial_capital
+                self.final_capital = equity_df['equity'].iloc[-1] if not equity_df.empty else cfg.initial_capital
+                
+                for _, row in trades_df.iterrows():
+                    class MockTrade:
+                        pass
+                    t = MockTrade()
+                    t.pnl = row.get('pnl', 0)
+                    t.pnl_r = row.get('pnl_r', 0)
+                    t.entry_date = row.get('entry_date')
+                    t.exit_date = row.get('exit_date')
+                    t.symbol = row.get('symbol', '')
+                    t.entry_price = row.get('entry_price', 0)
+                    t.exit_price = row.get('exit_price', 0)
+                    self.trades.append(t)
+        
+        mock_result = MockResult(trades_df, equity_df, backtest_cfg)
+        trade_metrics = compute_trade_metrics(mock_result)
+        equity_metrics = compute_equity_metrics(mock_result)
+        
+        return trades_df, trade_metrics, equity_metrics
+    
+    print("\nRunning backtest with scoring enabled...")
+    trades_scoring, tr_scoring, eq_scoring = run_backtest_with_scoring(use_scoring=True)
+    
+    print("Running backtest without scoring (baseline)...")
+    trades_baseline, tr_baseline, eq_baseline = run_backtest_with_scoring(use_scoring=False)
+    
+    os.makedirs('outputs', exist_ok=True)
+    
+    bucket_report = pd.DataFrame()
+    monotonicity = {}
+    
+    if not trades_scoring.empty:
+        bucket_report = compute_score_bucket_metrics(trades_scoring)
+        if not bucket_report.empty:
+            bucket_report.to_csv('outputs/validation_score_bucket_report.csv', index=False)
+            print("Saved: outputs/validation_score_bucket_report.csv")
+            
+            monotonicity = check_score_monotonicity(bucket_report)
+            if monotonicity.get('warning'):
+                print(f"\n*** WARNING: {monotonicity['warning']} ***\n")
+        
+        feature_report = compute_feature_attribution_report(trades_scoring)
+        if not feature_report.empty:
+            feature_report.to_csv('outputs/validation_feature_attribution_report.csv', index=False)
+            print("Saved: outputs/validation_feature_attribution_report.csv")
+    
+    recommendation_lines = [
+        "=" * 60,
+        "VALIDATION SCORING RECOMMENDATION",
+        "=" * 60,
+        "",
+        "CHOSEN SCORING DEFAULTS:",
+        f"  score_policy: {scoring_config.get('score_policy', 'RAW')}",
+        f"  trend_score_mode: {scoring_config.get('trend_score_mode', 'NEUTRAL')}",
+        f"  min_pattern_score: {scoring_config.get('min_pattern_score', 0)}",
+        f"  top_k_per_day: {scoring_config.get('top_k_per_day', 0)}",
+        "",
+        "SCORING ENABLED RESULTS:",
+        f"  Trades: {tr_scoring.get('trade_count', 0)}",
+        f"  Win Rate: {tr_scoring.get('win_rate', 0):.1f}%",
+        f"  Expectancy R: {tr_scoring.get('expectancy_r', 0):.3f}",
+        f"  Total Return: {eq_scoring.get('total_return_pct', 0):.2f}%",
+        f"  Max Drawdown: {eq_scoring.get('max_drawdown_pct', 0):.2f}%",
+        f"  Profit Factor: {tr_scoring.get('profit_factor', 0):.2f}",
+        "",
+        "BASELINE (NO SCORING FILTER) RESULTS:",
+        f"  Trades: {tr_baseline.get('trade_count', 0)}",
+        f"  Win Rate: {tr_baseline.get('win_rate', 0):.1f}%",
+        f"  Expectancy R: {tr_baseline.get('expectancy_r', 0):.3f}",
+        f"  Total Return: {eq_baseline.get('total_return_pct', 0):.2f}%",
+        f"  Max Drawdown: {eq_baseline.get('max_drawdown_pct', 0):.2f}%",
+        f"  Profit Factor: {tr_baseline.get('profit_factor', 0):.2f}",
+        "",
+        "DELTA (SCORING vs BASELINE):",
     ]
     
-    print(f"\nRunning: {' '.join(cmd)}\n")
+    delta_return = eq_scoring.get('total_return_pct', 0) - eq_baseline.get('total_return_pct', 0)
+    delta_dd = eq_scoring.get('max_drawdown_pct', 0) - eq_baseline.get('max_drawdown_pct', 0)
+    delta_expectancy = tr_scoring.get('expectancy_r', 0) - tr_baseline.get('expectancy_r', 0)
+    delta_trades = tr_scoring.get('trade_count', 0) - tr_baseline.get('trade_count', 0)
     
-    result = subprocess.run(cmd, capture_output=False)
+    recommendation_lines.extend([
+        f"  Return: {'+' if delta_return >= 0 else ''}{delta_return:.2f}%",
+        f"  Drawdown: {'+' if delta_dd >= 0 else ''}{delta_dd:.2f}% {'(better)' if delta_dd < 0 else '(worse)'}",
+        f"  Expectancy R: {'+' if delta_expectancy >= 0 else ''}{delta_expectancy:.3f}",
+        f"  Trade Count: {'+' if delta_trades >= 0 else ''}{delta_trades}",
+        "",
+    ])
     
-    if result.returncode == 0:
-        print("\n" + "=" * 60)
-        print("VALIDATION COMPLETE!")
-        print("=" * 60)
+    if not trades_scoring.empty:
+        monotonicity = check_score_monotonicity(bucket_report) if not bucket_report.empty else {}
+        recommendation_lines.extend([
+            "MONOTONICITY CHECK:",
+            f"  Inverted: {monotonicity.get('inverted_top_decile', 'N/A')}",
+            f"  Spearman Correlation: {monotonicity.get('monotonicity_score', 'N/A')}",
+            f"  Top Bucket Avg R: {monotonicity.get('top_bucket_avg_r', 'N/A')}",
+            f"  Bottom Bucket Avg R: {monotonicity.get('bottom_bucket_avg_r', 'N/A')}",
+            "",
+        ])
+        
+        if monotonicity.get('inverted_top_decile'):
+            recommendation_lines.append("*** WARNING: Score inversion detected! Consider using --score-policy INVERT ***")
+        else:
+            recommendation_lines.append("Score monotonicity OK - higher scores correlate with better performance.")
+    
+    recommendation_lines.extend([
+        "",
+        "=" * 60,
+        "RECOMMENDATION:",
+        "=" * 60,
+    ])
+    
+    if delta_expectancy > 0 and not monotonicity.get('inverted_top_decile', False):
+        recommendation_lines.append("Use scoring filters - they improve expectancy without inversion.")
+        recommendation_lines.append(f"Run: python main.py --config {config_path} --backtest-v2")
+    elif monotonicity.get('inverted_top_decile', False):
+        recommendation_lines.append("Consider disabling scoring or using INVERT policy due to detected inversion.")
+        recommendation_lines.append("Run: python main.py --score-policy INVERT --backtest-v2")
     else:
-        print(f"\nValidation failed with exit code: {result.returncode}")
+        recommendation_lines.append("Scoring filter may not provide significant benefit. Test both approaches.")
+        recommendation_lines.append(f"Run: python main.py --config {config_path} --backtest-v2")
+    
+    recommendation_text = "\n".join(recommendation_lines)
+    
+    with open('outputs/validation_scoring_recommendation.txt', 'w') as f:
+        f.write(recommendation_text)
+    print("\nSaved: outputs/validation_scoring_recommendation.txt")
+    
+    print("\n" + recommendation_text)
+    
+    validation_summary = {
+        'config_path': config_path,
+        'symbols_validated': len([s for s in price_data if s not in ['QQQ', 'SPY']]),
+        'scoring_defaults': scoring_config,
+        'results_with_scoring': {
+            'trades': tr_scoring.get('trade_count', 0),
+            'win_rate': tr_scoring.get('win_rate', 0),
+            'expectancy_r': tr_scoring.get('expectancy_r', 0),
+            'total_return_pct': eq_scoring.get('total_return_pct', 0),
+            'max_drawdown_pct': eq_scoring.get('max_drawdown_pct', 0),
+        },
+        'results_baseline': {
+            'trades': tr_baseline.get('trade_count', 0),
+            'win_rate': tr_baseline.get('win_rate', 0),
+            'expectancy_r': tr_baseline.get('expectancy_r', 0),
+            'total_return_pct': eq_baseline.get('total_return_pct', 0),
+            'max_drawdown_pct': eq_baseline.get('max_drawdown_pct', 0),
+        },
+        'monotonicity_check': monotonicity if not trades_scoring.empty else {},
+        'delta': {
+            'return_pct': delta_return,
+            'drawdown_pct': delta_dd,
+            'expectancy_r': delta_expectancy,
+        }
+    }
+    
+    with open('outputs/validation_summary.json', 'w') as f:
+        json.dump(validation_summary, f, indent=2, default=str)
+    print("Saved: outputs/validation_summary.json")
+    
+    print("\n" + "=" * 60)
+    print("VALIDATION COMPLETE!")
+    print("=" * 60)
 
 
 def main():
@@ -1628,6 +2075,28 @@ def main():
     with open('outputs/walkforward_summary.txt', 'w') as f:
         f.write(summary_text)
     print(f"Summary saved to: outputs/walkforward_summary.txt")
+    
+    score_policy_summary = compute_score_policy_wf_summary(window_results)
+    if not score_policy_summary.empty:
+        score_policy_summary.to_csv('outputs/score_policy_wf_summary.csv', index=False)
+        print(f"Score policy summary saved to: outputs/score_policy_wf_summary.csv")
+        
+        scoring_defaults = select_best_scoring_defaults(
+            score_policy_summary,
+            min_pass_rate=args.min_pass_rate,
+            min_median_test_score=args.min_median_test_score
+        )
+        
+        with open('outputs/chosen_scoring_defaults.json', 'w') as f:
+            json.dump(scoring_defaults, f, indent=2)
+        print(f"Chosen scoring defaults saved to: outputs/chosen_scoring_defaults.json")
+        
+        if scoring_defaults.get('warning'):
+            print(f"  Warning: {scoring_defaults['warning']}")
+        print(f"  Selected: score_policy={scoring_defaults['chosen_defaults']['score_policy']}, "
+              f"trend={scoring_defaults['chosen_defaults']['trend_score_mode']}, "
+              f"min_score={scoring_defaults['chosen_defaults']['min_pattern_score']}, "
+              f"top_k={scoring_defaults['chosen_defaults']['top_k_per_day']}")
     
     cache_stats = get_cache_stats(args.price_cache_dir)
     

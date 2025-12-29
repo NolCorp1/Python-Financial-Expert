@@ -855,3 +855,65 @@ def compute_threshold_performance(
         })
     
     return pd.DataFrame(results)
+
+
+def check_score_monotonicity(bucket_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Check if score buckets show expected monotonicity (higher scores -> better performance).
+    
+    Args:
+        bucket_df: DataFrame from compute_score_bucket_metrics with 'bucket' and 'avg_r' columns
+    
+    Returns:
+        Dict with monotonicity diagnostics:
+        - inverted_top_decile: bool (True if top bucket avg_r < bottom bucket avg_r)
+        - monotonicity_score: float (Spearman correlation between bucket index and avg_r)
+        - top_bucket_avg_r: float
+        - bottom_bucket_avg_r: float
+        - warning: str (if inversion detected)
+    """
+    from scipy.stats import spearmanr
+    
+    result = {
+        'inverted_top_decile': False,
+        'monotonicity_score': 0.0,
+        'top_bucket_avg_r': 0.0,
+        'bottom_bucket_avg_r': 0.0,
+        'warning': None
+    }
+    
+    if bucket_df.empty or 'avg_r' not in bucket_df.columns:
+        result['warning'] = 'Insufficient data for monotonicity check'
+        return result
+    
+    df = bucket_df.sort_values('bucket' if 'bucket' in bucket_df.columns else 'min_score')
+    
+    if len(df) < 2:
+        result['warning'] = 'Need at least 2 buckets for monotonicity check'
+        return result
+    
+    result['bottom_bucket_avg_r'] = df.iloc[0]['avg_r']
+    result['top_bucket_avg_r'] = df.iloc[-1]['avg_r']
+    
+    result['inverted_top_decile'] = result['top_bucket_avg_r'] < result['bottom_bucket_avg_r']
+    
+    bucket_indices = list(range(len(df)))
+    avg_r_values = df['avg_r'].tolist()
+    
+    if len(bucket_indices) >= 3:
+        corr, pval = spearmanr(bucket_indices, avg_r_values)
+        result['monotonicity_score'] = round(corr, 4) if not np.isnan(corr) else 0.0
+    else:
+        if result['top_bucket_avg_r'] >= result['bottom_bucket_avg_r']:
+            result['monotonicity_score'] = 1.0
+        else:
+            result['monotonicity_score'] = -1.0
+    
+    if result['inverted_top_decile']:
+        result['warning'] = (
+            f"SCORE INVERSION DETECTED: Top bucket avg_r ({result['top_bucket_avg_r']:.3f}) "
+            f"< Bottom bucket avg_r ({result['bottom_bucket_avg_r']:.3f}). "
+            f"Monotonicity score: {result['monotonicity_score']:.2f}"
+        )
+    
+    return result
