@@ -1040,6 +1040,31 @@ def check_score_monotonicity(bucket_df: pd.DataFrame) -> Dict[str, Any]:
     return result
 
 
+def is_stress_mode_active(current_date: pd.Timestamp, cfg) -> bool:
+    """Check if stress mode should be active for this date."""
+    if cfg.recycling_stress_mode == "NONE":
+        return False
+    
+    if cfg.recycling_stress_start_date:
+        start_dt = pd.Timestamp(cfg.recycling_stress_start_date)
+        if current_date < start_dt:
+            return False
+    
+    if cfg.recycling_stress_end_date:
+        end_dt = pd.Timestamp(cfg.recycling_stress_end_date)
+        if current_date > end_dt:
+            return False
+    
+    return True
+
+
+def get_stressed_daily_budget(base_budget: float, cfg) -> float:
+    """Apply stress budget multiplier if LOW_BUDGET mode active."""
+    if cfg.recycling_stress_mode in ("LOW_BUDGET", "BOTH"):
+        return base_budget * cfg.recycling_stress_daily_budget_mult
+    return base_budget
+
+
 def compute_recycling_metrics(trades_df: pd.DataFrame) -> Dict[str, Any]:
     """
     Compute metrics for capital recycling events.
@@ -1098,3 +1123,164 @@ def compute_recycling_metrics(trades_df: pd.DataFrame) -> Dict[str, Any]:
             result['recycled_contribution_pct'] = round(100.0 * recycled_pnl / total_pnl, 2)
     
     return result
+
+
+def compute_recycling_effectiveness_metrics(trades_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Compute advanced recycling effectiveness metrics.
+    
+    For each recycling event, compute:
+    - swap_edge_r: replacement_trade_r - recycled_trade_remaining_r
+    - capital_reuse_efficiency: incremental_return / freed_risk_fraction
+    - false_recycle_rate: pct where recycled trade would have outperformed
+    
+    Args:
+        trades_df: DataFrame with trades including recycle metadata
+    
+    Returns:
+        Dict with effectiveness metrics
+    """
+    result = {
+        'recycle_events_count': 0,
+        'pct_trades_recycled': 0.0,
+        'avg_swap_edge_r': 0.0,
+        'median_swap_edge_r': 0.0,
+        'pct_positive_swaps': 0.0,
+        'avg_capital_reuse_efficiency': 0.0,
+        'false_recycle_rate': 0.0,
+        'swap_edges': [],
+    }
+    
+    if trades_df.empty:
+        return result
+    
+    # Identify recycled trades (those that were exited via recycling)
+    recycled_mask = trades_df['exit_reason'].str.contains('RECYCLE', case=False, na=False)
+    recycled_df = trades_df[recycled_mask].copy()
+    
+    if len(recycled_df) == 0:
+        return result
+    
+    result['recycle_events_count'] = len(recycled_df)
+    result['pct_trades_recycled'] = round(100.0 * len(recycled_df) / len(trades_df), 2)
+    
+    swap_edges = []
+    false_recycle_count = 0
+    capital_efficiencies = []
+    
+    for _, recycled_row in recycled_df.iterrows():
+        recycled_r = recycled_row.get('pnl_r_multiple', 0)
+        recycled_score = recycled_row.get('recycle_old_score', 0) or 0
+        replacement_score = recycled_row.get('recycle_replaced_by_score', 0) or 0
+        triggered_by = recycled_row.get('recycle_triggered_by_symbol', None)
+        freed_budget = recycled_row.get('allocation_budget_used', 0.01) or 0.01
+        
+        # Find the replacement trade (same day entry, triggered_by symbol)
+        if triggered_by and 'symbol' in trades_df.columns:
+            entry_date = recycled_row.get('exit_date')
+            replacement_trades = trades_df[
+                (trades_df['symbol'] == triggered_by) & 
+                (trades_df['entry_date'] == entry_date)
+            ]
+            
+            if len(replacement_trades) > 0:
+                replacement_r = replacement_trades.iloc[0].get('pnl_r_multiple', 0)
+                swap_edge = replacement_r - recycled_r
+                swap_edges.append(swap_edge)
+                
+                if swap_edge < 0:
+                    false_recycle_count += 1
+                
+                pnl_diff = replacement_trades.iloc[0].get('pnl_dollars', 0) - recycled_row.get('pnl_dollars', 0)
+                if freed_budget > 0:
+                    capital_efficiencies.append(pnl_diff / (freed_budget * 100000))
+            else:
+                swap_edges.append(-recycled_r)
+                if recycled_r > 0:
+                    false_recycle_count += 1
+        else:
+            swap_edges.append(-recycled_r)
+            if recycled_r > 0:
+                false_recycle_count += 1
+    
+    if len(swap_edges) > 0:
+        result['avg_swap_edge_r'] = round(float(np.mean(swap_edges)), 4)
+        result['median_swap_edge_r'] = round(float(np.median(swap_edges)), 4)
+        result['pct_positive_swaps'] = round(100.0 * sum(1 for e in swap_edges if e > 0) / len(swap_edges), 2)
+        result['false_recycle_rate'] = round(100.0 * false_recycle_count / len(swap_edges), 2)
+        result['swap_edges'] = [round(e, 4) for e in swap_edges]
+    
+    if len(capital_efficiencies) > 0:
+        result['avg_capital_reuse_efficiency'] = round(float(np.mean(capital_efficiencies)), 4)
+    
+    return result
+
+
+def generate_recycling_effectiveness_report(trades_df: pd.DataFrame, output_path: str = 'outputs/recycling_effectiveness_report.csv') -> pd.DataFrame:
+    """
+    Generate detailed recycling effectiveness report and save to CSV.
+    
+    Args:
+        trades_df: DataFrame with trades
+        output_path: Path to save CSV report
+    
+    Returns:
+        DataFrame with per-recycle event analysis
+    """
+    import os
+    
+    if trades_df.empty:
+        empty_df = pd.DataFrame()
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        empty_df.to_csv(output_path, index=False)
+        return empty_df
+    
+    recycled_mask = trades_df['exit_reason'].str.contains('RECYCLE', case=False, na=False)
+    recycled_df = trades_df[recycled_mask].copy()
+    
+    if len(recycled_df) == 0:
+        empty_df = pd.DataFrame(columns=['recycled_symbol', 'recycle_date', 'recycled_r', 
+                                          'replacement_symbol', 'replacement_r', 'swap_edge_r',
+                                          'old_score', 'new_score', 'score_improvement'])
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        empty_df.to_csv(output_path, index=False)
+        return empty_df
+    
+    report_rows = []
+    for _, recycled_row in recycled_df.iterrows():
+        recycled_r = recycled_row.get('pnl_r_multiple', 0)
+        old_score = recycled_row.get('recycle_old_score', 0) or 0
+        new_score = recycled_row.get('recycle_replaced_by_score', 0) or 0
+        triggered_by = recycled_row.get('recycle_triggered_by_symbol', '')
+        
+        replacement_r = 0
+        if triggered_by and 'symbol' in trades_df.columns:
+            entry_date = recycled_row.get('exit_date')
+            replacement_trades = trades_df[
+                (trades_df['symbol'] == triggered_by) & 
+                (trades_df['entry_date'] == entry_date)
+            ]
+            if len(replacement_trades) > 0:
+                replacement_r = replacement_trades.iloc[0].get('pnl_r_multiple', 0)
+        
+        swap_edge = replacement_r - recycled_r
+        score_improvement = (new_score / old_score - 1.0) if old_score > 0 else 0
+        
+        report_rows.append({
+            'recycled_symbol': recycled_row.get('symbol', ''),
+            'recycle_date': recycled_row.get('exit_date', ''),
+            'recycled_r': round(recycled_r, 4),
+            'replacement_symbol': triggered_by,
+            'replacement_r': round(replacement_r, 4),
+            'swap_edge_r': round(swap_edge, 4),
+            'old_score': round(old_score, 2),
+            'new_score': round(new_score, 2),
+            'score_improvement': round(score_improvement, 4),
+            'was_positive_swap': swap_edge > 0,
+        })
+    
+    report_df = pd.DataFrame(report_rows)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    report_df.to_csv(output_path, index=False)
+    
+    return report_df

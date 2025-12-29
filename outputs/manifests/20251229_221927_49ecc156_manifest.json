@@ -1,0 +1,65 @@
+{
+  "run_id": "20251229_221927_49ecc156",
+  "timestamp": "2025-12-29T22:19:32.475618",
+  "mode": "backtest",
+  "command_line": "python main.py --universe demo --max-stocks 15 --backtest-v2 --recycling-stress-mode LOW_BUDGET --run-recycling-comparison true",
+  "git_commit": "94d13662674f",
+  "versions": {
+    "python": "3.12.11",
+    "platform": "Linux 6.14.11",
+    "yfinance": "1.0",
+    "pandas": "2.3.3",
+    "numpy": "2.2.6",
+    "scipy": "1.16.3",
+    "pyarrow": "22.0.0"
+  },
+  "universe": {
+    "type": "demo",
+    "symbols_requested": 15,
+    "symbols_used": 15
+  },
+  "date_range": {
+    "start": null,
+    "end": null
+  },
+  "liquidity_config": {
+    "min_price": 5.0,
+    "min_avg_dollar_vol": 20000000,
+    "window": 20
+  },
+  "cache_stats": {
+    "exists": true,
+    "count": 411,
+    "size_mb": 34.355990409851074,
+    "oldest": "AAL",
+    "newest": "BSY"
+  },
+  "strategy_config": {
+    "detection": {
+      "price_tolerance": 0.04,
+      "min_peak_height": 0.06,
+      "min_separation": 20,
+      "max_separation": 200,
+      "lookback_days": 504
+    },
+    "portfolio": {
+      "initial_capital": 100000.0,
+      "risk_confirmed": 0.01,
+      "risk_forming": 0.006,
+      "max_positions_total": 10,
+      "max_positions_forming": 3
+    },
+    "regime": {
+      "enabled": true,
+      "soft_gate": true
+    }
+  },
+  "extra": {
+    "symbols_seed": null,
+    "metrics": {
+      "total_return": 2.58,
+      "max_dd": 0,
+      "trades": 71
+    }
+  }
+}

@@ -567,6 +567,23 @@ def main():
     parser.add_argument('--recycle-no-progress-r', type=float, default=0.25,
                        help='Min R progress to avoid recycle eligibility')
     
+    # Recycling stress test (Task 22)
+    parser.add_argument('--recycling-stress-mode', type=str, default='NONE',
+                       choices=['NONE', 'LOW_BUDGET', 'HIGH_SIGNAL_DENSITY', 'BOTH'],
+                       help='Stress test mode: NONE, LOW_BUDGET, HIGH_SIGNAL_DENSITY, or BOTH')
+    parser.add_argument('--recycling-stress-daily-budget-mult', type=float, default=0.50,
+                       help='Budget multiplier for LOW_BUDGET stress mode (0.50 = 50%% of normal)')
+    parser.add_argument('--recycling-stress-disable-topk', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Disable top_k limits in HIGH_SIGNAL_DENSITY mode')
+    parser.add_argument('--recycling-stress-start-date', type=str, default=None,
+                       help='Start date for stress window (YYYY-MM-DD, None=all dates)')
+    parser.add_argument('--recycling-stress-end-date', type=str, default=None,
+                       help='End date for stress window (YYYY-MM-DD, None=all dates)')
+    parser.add_argument('--run-recycling-comparison', type=str, default='false',
+                       choices=['true', 'false'],
+                       help='Run OFF/PARTIAL/EXIT recycling comparison')
+    
     parser.add_argument('--symbols-seed', type=int, default=None,
                        help='Random seed for deterministic symbol subset selection')
     parser.add_argument('--parity-check', action='store_true',
@@ -1081,7 +1098,12 @@ def main():
             recycle_partial_fraction=args.recycle_partial_fraction,
             recycle_min_remaining_position_fraction=args.recycle_min_remaining_fraction,
             recycle_no_progress_days=args.recycle_no_progress_days,
-            recycle_no_progress_r=args.recycle_no_progress_r
+            recycle_no_progress_r=args.recycle_no_progress_r,
+            recycling_stress_mode=args.recycling_stress_mode.upper(),
+            recycling_stress_daily_budget_mult=args.recycling_stress_daily_budget_mult,
+            recycling_stress_disable_topk=args.recycling_stress_disable_topk.lower() == 'true',
+            recycling_stress_start_date=args.recycling_stress_start_date,
+            recycling_stress_end_date=args.recycling_stress_end_date
         )
         
         score_status = "ON" if cfg.use_score_risk_scaling else "OFF"
@@ -1098,6 +1120,10 @@ def main():
         print(f"Capital recycling: {recycle_status} | trigger={cfg.recycle_trigger_mode} | "
               f"gap={cfg.recycle_min_score_gap:.0%} | action={cfg.recycle_action}")
         
+        if cfg.recycling_stress_mode != "NONE":
+            print(f"Stress test: {cfg.recycling_stress_mode} | budget_mult={cfg.recycling_stress_daily_budget_mult:.2f} | "
+                  f"disable_topk={cfg.recycling_stress_disable_topk}")
+        
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)
         
         os.makedirs('outputs', exist_ok=True)
@@ -1108,7 +1134,9 @@ def main():
         split_metrics = compute_split_metrics(enriched_trades, equity_df)
         print_metrics_report(split_metrics)
         
-        from metrics import compute_score_bucket_metrics, compute_threshold_performance, compute_feature_attribution_report
+        from metrics import (compute_score_bucket_metrics, compute_threshold_performance, 
+                             compute_feature_attribution_report, compute_recycling_effectiveness_metrics,
+                             generate_recycling_effectiveness_report)
         if 'pattern_score' in trades_df.columns and trades_df['pattern_score'].notna().any():
             bucket_report = compute_score_bucket_metrics(trades_df)
             if not bucket_report.empty:
@@ -1149,10 +1177,23 @@ def main():
                     for _, row in neg_corr.iterrows():
                         print(f"  {row['feature']:>15}: corr={row['corr_to_r']:+.3f}")
         
+        recycling_eff = compute_recycling_effectiveness_metrics(trades_df)
+        if recycling_eff['recycle_events_count'] > 0:
+            generate_recycling_effectiveness_report(trades_df, 'outputs/recycling_effectiveness_report.csv')
+            print("\n" + "-" * 50)
+            print("RECYCLING EFFECTIVENESS")
+            print("-" * 50)
+            print(f"Recycle events: {recycling_eff['recycle_events_count']}")
+            print(f"Avg swap edge (R): {recycling_eff['avg_swap_edge_r']:+.3f}")
+            print(f"Positive swaps: {recycling_eff['pct_positive_swaps']:.1f}%")
+            print(f"False recycle rate: {recycling_eff['false_recycle_rate']:.1f}%")
+            print(f"Capital reuse efficiency: {recycling_eff['avg_capital_reuse_efficiency']:.3f}")
+        
         with open('outputs/metrics.json', 'w') as f:
             serializable_metrics = {}
             for key, val in split_metrics.items():
                 serializable_metrics[key] = {k: (v if not isinstance(v, float) or not (v != v) else None) for k, v in val.items()}
+            serializable_metrics['recycling_effectiveness'] = recycling_eff
             json.dump(serializable_metrics, f, indent=2, default=str)
         
         print("\nOutputs saved to:")
@@ -1163,6 +1204,8 @@ def main():
             print("  - outputs/score_bucket_report.csv")
             print("  - outputs/score_threshold_report.csv")
             print("  - outputs/feature_attribution_report.csv")
+        if recycling_eff['recycle_events_count'] > 0:
+            print("  - outputs/recycling_effectiveness_report.csv")
         
         cache_stats = get_cache_stats('data/price_cache')
         
@@ -1214,6 +1257,9 @@ def main():
         print(f"\nRun ID: {run_id}")
         print("="*60 + "\n")
         
+        if args.run_recycling_comparison.lower() == 'true':
+            run_recycling_comparison(args, signals_by_symbol, price_data, cfg)
+        
         return trades_df, equity_df, split_metrics
     
     print("\n" + "="*60)
@@ -1243,6 +1289,81 @@ def main():
         plot_top_patterns(results, config, num_plots=args.num_plots)
     
     return results
+
+
+def run_recycling_comparison(args, signals_by_symbol, price_data, base_cfg):
+    """
+    Run comparative backtest: OFF vs PARTIAL vs EXIT recycling modes.
+    
+    Returns comparison summary DataFrame.
+    """
+    import pandas as pd
+    from dataclasses import replace
+    from metrics import compute_recycling_effectiveness_metrics
+    
+    print("\n" + "=" * 60)
+    print("RECYCLING COMPARISON ANALYSIS")
+    print("=" * 60)
+    
+    results = []
+    
+    variants = [
+        ('OFF', replace(base_cfg, use_capital_recycling=False)),
+        ('PARTIAL', replace(base_cfg, use_capital_recycling=True, recycle_action='PARTIAL')),
+        ('EXIT', replace(base_cfg, use_capital_recycling=True, recycle_action='EXIT')),
+    ]
+    
+    for name, cfg in variants:
+        print(f"\nRunning variant: {name}...")
+        trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)
+        
+        if trades_df.empty:
+            results.append({
+                'variant': name,
+                'total_return_pct': 0.0,
+                'max_drawdown_pct': 0.0,
+                'trades': 0,
+                'recycling_events': 0,
+                'avg_swap_edge_r': 0.0,
+                'false_recycle_rate': 0.0,
+            })
+            continue
+        
+        enriched = enrich_trades(trades_df)
+        split_metrics = compute_split_metrics(enriched, equity_df)
+        recycling_eff = compute_recycling_effectiveness_metrics(trades_df)
+        
+        total_return = split_metrics.get('ALL', {}).get('total_return_pct', 0)
+        max_dd = split_metrics.get('ALL', {}).get('max_dd_pct', 0)
+        trade_count = split_metrics.get('ALL', {}).get('trade_count', 0)
+        
+        results.append({
+            'variant': name,
+            'total_return_pct': round(total_return, 2),
+            'max_drawdown_pct': round(max_dd, 2),
+            'trades': trade_count,
+            'recycling_events': recycling_eff['recycle_events_count'],
+            'avg_swap_edge_r': recycling_eff['avg_swap_edge_r'],
+            'false_recycle_rate': recycling_eff['false_recycle_rate'],
+        })
+    
+    comparison_df = pd.DataFrame(results)
+    
+    print("\n" + "-" * 60)
+    print("COMPARISON SUMMARY")
+    print("-" * 60)
+    print(f"{'Variant':<10} {'Return%':>10} {'MaxDD%':>10} {'Trades':>8} {'Recycle':>8} {'SwapEdge':>10} {'FalseRate':>10}")
+    print("-" * 60)
+    for _, row in comparison_df.iterrows():
+        print(f"{row['variant']:<10} {row['total_return_pct']:>+9.2f}% {row['max_drawdown_pct']:>9.2f}% "
+              f"{row['trades']:>8} {row['recycling_events']:>8} {row['avg_swap_edge_r']:>+9.3f}R {row['false_recycle_rate']:>9.1f}%")
+    print("-" * 60)
+    
+    os.makedirs('outputs', exist_ok=True)
+    comparison_df.to_csv('outputs/recycling_comparison_summary.csv', index=False)
+    print(f"\nSaved: outputs/recycling_comparison_summary.csv")
+    
+    return comparison_df
 
 
 if __name__ == '__main__':

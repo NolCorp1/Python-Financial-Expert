@@ -50,6 +50,15 @@ I prefer iterative development, so please propose changes and explain them thoro
   - `recycle_partial_fraction` (default 0.50): Fraction to sell in partial recycle
   - Trade output includes: RECYCLE_PARTIAL/RECYCLE_EXIT exit reasons, recycle_triggered_by_symbol, recycle_replaced_by_score
   - No lookahead: recycling decisions based on prior-close data only
+- **Capital Recycling Stress Tests & Validation** (Task 22): Validates recycling effectiveness under pressure scenarios.
+  - **Stress Modes**: `recycling_stress_mode` = NONE | LOW_BUDGET | HIGH_SIGNAL_DENSITY | BOTH
+  - **LOW_BUDGET**: Reduces daily budget by `recycling_stress_daily_budget_mult` (default 0.50 = 50%) to force budget pressure
+  - **HIGH_SIGNAL_DENSITY**: Disables top_k limits to increase signal congestion
+  - **Effectiveness Metrics**: swap_edge_r (replacement R - recycled R), false_recycle_rate, capital_reuse_efficiency
+  - **Comparison Runner**: `--run-recycling-comparison true` runs OFF/PARTIAL/EXIT variants and generates summary
+  - **Outputs**: `recycling_effectiveness_report.csv`, `recycling_comparison_summary.csv`
+  - **Validation Rejection**: Configs with false_recycle_rate > 40% or avg_swap_edge_r < 0 are flagged
+  - Example: `python main.py --backtest-v2 --recycling-stress-mode BOTH --run-recycling-comparison true`
 - **Market Regime Filter**: Incorporates a market regime filter with soft-gating using MA-based trend and volatility detection to adjust risk.
 - **Correlation & Cluster Caps**: Implements portfolio-level risk management by limiting positions based on symbol correlation and cluster membership.
 - **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules for "FORMING" patterns.

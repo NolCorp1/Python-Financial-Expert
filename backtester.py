@@ -128,6 +128,13 @@ class BacktestConfig:
     recycle_min_remaining_position_fraction: float = 0.25  # don't shrink below this
     recycle_no_progress_days: int = 25
     recycle_no_progress_r: float = 0.25
+    
+    # Stress test controls (Task 22)
+    recycling_stress_mode: str = "NONE"  # NONE, LOW_BUDGET, HIGH_SIGNAL_DENSITY, BOTH
+    recycling_stress_daily_budget_mult: float = 0.50  # applied when stress mode includes LOW_BUDGET
+    recycling_stress_disable_topk: bool = True  # disable top_k limits to increase congestion
+    recycling_stress_start_date: Optional[str] = None  # YYYY-MM-DD or None
+    recycling_stress_end_date: Optional[str] = None  # YYYY-MM-DD or None
 
 
 def compute_signal_allocation_score(signal: 'TradeSignal') -> float:
@@ -291,19 +298,28 @@ def allocate_daily_signals(
     # Sort by allocation_score descending (highest priority first)
     candidates.sort(key=lambda c: c.allocation_score, reverse=True)
     
-    # Apply max_signals_per_day soft cap
-    if cfg.max_signals_per_day is not None and len(candidates) > cfg.max_signals_per_day:
+    # Apply max_signals_per_day soft cap (unless stress mode disables it)
+    should_apply_topk = cfg.max_signals_per_day is not None and len(candidates) > cfg.max_signals_per_day
+    if cfg.recycling_stress_mode in ("HIGH_SIGNAL_DENSITY", "BOTH") and cfg.recycling_stress_disable_topk:
+        should_apply_topk = False
+    if should_apply_topk:
         candidates = candidates[:cfg.max_signals_per_day]
     
     # Assign ranks
     for rank, cand in enumerate(candidates, start=1):
         cand.allocation_rank = rank
     
-    # Budget limits
+    # Budget limits - apply stress mode if active
     daily_budget = cfg.daily_risk_budget
     forming_budget = cfg.daily_risk_budget_forming if cfg.daily_risk_budget_forming is not None else daily_budget
     confirmed_budget = cfg.daily_risk_budget_confirmed if cfg.daily_risk_budget_confirmed is not None else daily_budget
     weekly_budget = cfg.weekly_risk_budget if cfg.weekly_risk_budget is not None else float('inf')
+    
+    # Apply stress mode budget reduction (LOW_BUDGET or BOTH)
+    if cfg.recycling_stress_mode in ("LOW_BUDGET", "BOTH"):
+        daily_budget *= cfg.recycling_stress_daily_budget_mult
+        forming_budget *= cfg.recycling_stress_daily_budget_mult
+        confirmed_budget *= cfg.recycling_stress_daily_budget_mult
     
     # Track remaining budgets (greedy allocation)
     remaining_daily = daily_budget
