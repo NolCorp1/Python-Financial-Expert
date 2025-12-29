@@ -12,6 +12,12 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 import numpy as np
 
+from pattern_scoring import (
+    compute_pattern_quality_score,
+    filter_signals_by_score,
+    DEFAULT_WEIGHTS
+)
+
 
 @dataclass
 class TradeSignal:
@@ -55,6 +61,13 @@ def generate_signals(
     stop_loss_buffer: float = 0.02,
     forming_lookahead_days: int = 20,
     forming_requires_green: bool = True,
+    compute_scores: bool = True,
+    score_weights: Optional[Dict[str, float]] = None,
+    price_tolerance: float = 0.04,
+    min_peak_height: float = 0.06,
+    min_pattern_score: float = 0.0,
+    top_k_per_day: int = 0,
+    top_k_per_week: int = 0,
 ) -> List[TradeSignal]:
     """
     Generate trading signals from detected patterns.
@@ -69,6 +82,13 @@ def generate_signals(
         stop_loss_buffer: Buffer percentage below support (default 2%)
         forming_lookahead_days: Max bars to search for forming trigger
         forming_requires_green: Require green candle for forming trigger
+        compute_scores: Whether to compute pattern quality scores
+        score_weights: Custom weights for scoring features
+        price_tolerance: Pattern detection tolerance (for scoring)
+        min_peak_height: Pattern detection min height (for scoring)
+        min_pattern_score: Minimum score threshold (0 = no filter)
+        top_k_per_day: Keep only top K signals per day (0 = disabled)
+        top_k_per_week: Keep only top K signals per week (0 = disabled)
         
     Returns:
         List of TradeSignal objects
@@ -80,7 +100,13 @@ def generate_signals(
     forming_patterns = [p for p in patterns if p.get('status') == 'FORMING']
     
     for pattern in confirmed_patterns:
-        signal = _generate_confirmed_signal(df, pattern, stop_loss_buffer)
+        signal = _generate_confirmed_signal(
+            df, pattern, stop_loss_buffer,
+            compute_scores=compute_scores,
+            score_weights=score_weights,
+            price_tolerance=price_tolerance,
+            min_peak_height=min_peak_height
+        )
         if signal and signal.pattern_id not in seen_pattern_ids:
             signals.append(signal)
             seen_pattern_ids.add(signal.pattern_id)
@@ -92,11 +118,23 @@ def generate_signals(
         
         signal = _generate_forming_signal(
             df, pattern, stop_loss_buffer, 
-            forming_lookahead_days, forming_requires_green
+            forming_lookahead_days, forming_requires_green,
+            compute_scores=compute_scores,
+            score_weights=score_weights,
+            price_tolerance=price_tolerance,
+            min_peak_height=min_peak_height
         )
         if signal:
             signals.append(signal)
             seen_pattern_ids.add(signal.pattern_id)
+    
+    if min_pattern_score > 0 or top_k_per_day > 0 or top_k_per_week > 0:
+        signals = filter_signals_by_score(
+            signals,
+            min_score=min_pattern_score,
+            top_k_per_day=top_k_per_day,
+            top_k_per_week=top_k_per_week
+        )
     
     return signals
 
@@ -104,7 +142,11 @@ def generate_signals(
 def _generate_confirmed_signal(
     df: pd.DataFrame,
     pattern: Dict,
-    stop_loss_buffer: float
+    stop_loss_buffer: float,
+    compute_scores: bool = True,
+    score_weights: Optional[Dict[str, float]] = None,
+    price_tolerance: float = 0.04,
+    min_peak_height: float = 0.06
 ) -> Optional[TradeSignal]:
     """Generate signal for a CONFIRMED pattern."""
     breakout_date = pattern.get('breakout_date')
@@ -134,12 +176,32 @@ def _generate_confirmed_signal(
     
     risk_per_share = entry_price - stop_loss
     
+    pattern_score = 0.0
+    score_features = {}
+    
+    if compute_scores:
+        pattern_score, score_features = compute_pattern_quality_score(
+            df=df,
+            pattern=pattern,
+            entry_date=entry_date,
+            entry_kind='CONFIRMED',
+            weights=score_weights,
+            price_tolerance=price_tolerance,
+            min_peak_height=min_peak_height
+        )
+    
+    avg_bottom = pattern.get('avg_bottom') or ((bottom1_price + bottom2_price) / 2)
+    neckline = pattern.get('neckline', 0)
+    neckline_rise_pct = (neckline - avg_bottom) / avg_bottom if avg_bottom > 0 else 0
+    
     meta = {
-        'avg_bottom': pattern.get('avg_bottom'),
+        'avg_bottom': avg_bottom,
         'height': pattern.get('height'),
         'separation_days': pattern.get('separation_days'),
-        'pattern_score': pattern.get('score') or pattern.get('strength_score'),
+        'pattern_score': pattern_score,
+        'score_features': score_features,
         'pattern_status': pattern.get('status'),
+        'neckline_rise_pct': round(neckline_rise_pct, 4),
     }
     
     return TradeSignal(
@@ -161,7 +223,11 @@ def _generate_forming_signal(
     pattern: Dict,
     stop_loss_buffer: float,
     forming_lookahead_days: int,
-    forming_requires_green: bool
+    forming_requires_green: bool,
+    compute_scores: bool = True,
+    score_weights: Optional[Dict[str, float]] = None,
+    price_tolerance: float = 0.04,
+    min_peak_height: float = 0.06
 ) -> Optional[TradeSignal]:
     """Generate signal for a FORMING pattern."""
     trigger_level = pattern.get('forming_trigger_level')
@@ -215,12 +281,32 @@ def _generate_forming_signal(
     
     risk_per_share = entry_price - stop_loss
     
+    pattern_score = 0.0
+    score_features = {}
+    
+    if compute_scores:
+        pattern_score, score_features = compute_pattern_quality_score(
+            df=df,
+            pattern=pattern,
+            entry_date=entry_date,
+            entry_kind='FORMING',
+            weights=score_weights,
+            price_tolerance=price_tolerance,
+            min_peak_height=min_peak_height
+        )
+    
+    avg_bottom = pattern.get('avg_bottom') or ((bottom1_price + bottom2_price) / 2)
+    neckline = pattern.get('neckline', 0)
+    neckline_rise_pct = (neckline - avg_bottom) / avg_bottom if avg_bottom > 0 else 0
+    
     meta = {
-        'avg_bottom': pattern.get('avg_bottom'),
+        'avg_bottom': avg_bottom,
         'height': pattern.get('height'),
         'separation_days': pattern.get('separation_days'),
-        'pattern_score': pattern.get('score') or pattern.get('strength_score'),
+        'pattern_score': pattern_score,
+        'score_features': score_features,
         'pattern_status': pattern.get('status'),
+        'neckline_rise_pct': round(neckline_rise_pct, 4),
     }
     
     return TradeSignal(
@@ -242,7 +328,14 @@ def generate_signals_from_scan_results(
     price_data: Dict[str, pd.DataFrame],
     stop_loss_buffer: float = 0.02,
     forming_lookahead_days: int = 20,
-    forming_requires_green: bool = True
+    forming_requires_green: bool = True,
+    compute_scores: bool = True,
+    score_weights: Optional[Dict[str, float]] = None,
+    price_tolerance: float = 0.04,
+    min_peak_height: float = 0.06,
+    min_pattern_score: float = 0.0,
+    top_k_per_day: int = 0,
+    top_k_per_week: int = 0,
 ) -> List[TradeSignal]:
     """
     Generate signals from scan results DataFrame.
@@ -253,6 +346,13 @@ def generate_signals_from_scan_results(
         stop_loss_buffer: Buffer percentage for stop loss
         forming_lookahead_days: Max bars to search for forming trigger
         forming_requires_green: Require green candle for forming trigger
+        compute_scores: Whether to compute pattern quality scores
+        score_weights: Custom weights for scoring features
+        price_tolerance: Pattern detection tolerance (for scoring)
+        min_peak_height: Pattern detection min height (for scoring)
+        min_pattern_score: Minimum score threshold (0 = no filter)
+        top_k_per_day: Keep only top K signals per day (0 = disabled)
+        top_k_per_week: Keep only top K signals per week (0 = disabled)
         
     Returns:
         List of TradeSignal objects
@@ -270,8 +370,23 @@ def generate_signals_from_scan_results(
             df, symbol_patterns, 
             stop_loss_buffer=stop_loss_buffer,
             forming_lookahead_days=forming_lookahead_days,
-            forming_requires_green=forming_requires_green
+            forming_requires_green=forming_requires_green,
+            compute_scores=compute_scores,
+            score_weights=score_weights,
+            price_tolerance=price_tolerance,
+            min_peak_height=min_peak_height,
+            min_pattern_score=0,
+            top_k_per_day=0,
+            top_k_per_week=0,
         )
         all_signals.extend(signals)
+    
+    if min_pattern_score > 0 or top_k_per_day > 0 or top_k_per_week > 0:
+        all_signals = filter_signals_by_score(
+            all_signals,
+            min_score=min_pattern_score,
+            top_k_per_day=top_k_per_day,
+            top_k_per_week=top_k_per_week
+        )
     
     return all_signals

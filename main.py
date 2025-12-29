@@ -500,6 +500,13 @@ def main():
     parser.add_argument('--parity-check', action='store_true',
                        help='Run parity check to verify config produces same results')
     
+    parser.add_argument('--min-pattern-score', type=float, default=0.0,
+                       help='Minimum pattern quality score (0-100) to trade. 0 = no filter')
+    parser.add_argument('--top-k-per-day', type=int, default=0,
+                       help='Keep only top K signals per day by score. 0 = disabled')
+    parser.add_argument('--top-k-per-week', type=int, default=0,
+                       help='Keep only top K signals per week by score. 0 = disabled')
+    
     args = parser.parse_args()
     
     loaded_config = None
@@ -874,8 +881,27 @@ def main():
                 continue
             df = price_data[sym]
             patterns = results[results['symbol'] == sym].to_dict('records')
-            signals = generate_signals(df, patterns)
+            signals = generate_signals(
+                df, patterns,
+                compute_scores=True,
+                price_tolerance=args.price_tolerance,
+                min_peak_height=args.min_peak_height,
+                min_pattern_score=0,
+                top_k_per_day=0,
+                top_k_per_week=0,
+            )
             all_signals.extend(signals)
+        
+        from pattern_scoring import filter_signals_by_score
+        if args.min_pattern_score > 0 or args.top_k_per_day > 0 or args.top_k_per_week > 0:
+            before_count = len(all_signals)
+            all_signals = filter_signals_by_score(
+                all_signals,
+                min_score=args.min_pattern_score,
+                top_k_per_day=args.top_k_per_day,
+                top_k_per_week=args.top_k_per_week
+            )
+            print(f"Score filtering: {before_count} -> {len(all_signals)} signals")
         
         print(f"Generated {len(all_signals)} trade signals from {len(results)} patterns")
         
@@ -934,6 +960,30 @@ def main():
         split_metrics = compute_split_metrics(enriched_trades, equity_df)
         print_metrics_report(split_metrics)
         
+        from metrics import compute_score_bucket_metrics, compute_threshold_performance
+        if 'pattern_score' in trades_df.columns and trades_df['pattern_score'].notna().any():
+            bucket_report = compute_score_bucket_metrics(trades_df)
+            if not bucket_report.empty:
+                bucket_report.to_csv('outputs/score_bucket_report.csv', index=False)
+                print("\n" + "-" * 50)
+                print("SCORE BUCKET ANALYSIS")
+                print("-" * 50)
+                for _, row in bucket_report.iterrows():
+                    print(f"Score {row['score_range']:>8}: {row['trade_count']:3d} trades, "
+                          f"WR={row['win_rate']:5.1f}%, AvgR={row['avg_r']:+.2f}, "
+                          f"PF={row['profit_factor']:.2f}")
+            
+            thresh_report = compute_threshold_performance(trades_df)
+            if not thresh_report.empty:
+                thresh_report.to_csv('outputs/score_threshold_report.csv', index=False)
+                print("\n" + "-" * 50)
+                print("THRESHOLD COMPARISON")
+                print("-" * 50)
+                for _, row in thresh_report.iterrows():
+                    print(f"Min score {int(row['min_score']):>3}: {int(row['trade_count']):3d} trades, "
+                          f"WR={row['win_rate']:5.1f}%, AvgR={row['avg_r']:+.2f}, "
+                          f"PnL=${row['total_pnl']:,.0f}")
+        
         with open('outputs/metrics.json', 'w') as f:
             serializable_metrics = {}
             for key, val in split_metrics.items():
@@ -944,6 +994,9 @@ def main():
         print("  - outputs/trades.csv")
         print("  - outputs/equity.csv")
         print("  - outputs/metrics.json")
+        if 'pattern_score' in trades_df.columns:
+            print("  - outputs/score_bucket_report.csv")
+            print("  - outputs/score_threshold_report.csv")
         
         cache_stats = get_cache_stats('data/price_cache')
         

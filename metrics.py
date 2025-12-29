@@ -608,3 +608,159 @@ def print_metrics_report(metrics: Dict[str, Dict[str, Any]]) -> None:
             print(f"Avg Hold Days: {avg_hold:.1f}")
     
     print("\n" + "=" * 50)
+
+
+def compute_score_bucket_metrics(
+    trades_df: pd.DataFrame,
+    score_col: str = 'pattern_score',
+    pnl_col: str = 'pnl_dollars',
+    r_col: str = 'pnl_r_multiple',
+    buckets: int = 10
+) -> pd.DataFrame:
+    """
+    Compute performance statistics by pattern score bucket (decile).
+    
+    Args:
+        trades_df: DataFrame with trade results
+        score_col: Column name for pattern score
+        pnl_col: Column name for PnL in dollars
+        r_col: Column name for R-multiple
+        buckets: Number of buckets (default 10 for deciles)
+    
+    Returns:
+        DataFrame with bucket stats
+    """
+    if trades_df.empty or score_col not in trades_df.columns:
+        return pd.DataFrame()
+    
+    df = trades_df.copy()
+    df = df.dropna(subset=[score_col])
+    
+    if df.empty or len(df) < buckets:
+        try:
+            df['score_bucket'] = pd.cut(
+                df[score_col],
+                bins=min(buckets, len(df)),
+                labels=False,
+                duplicates='drop'
+            )
+        except ValueError:
+            df['score_bucket'] = 0
+    else:
+        try:
+            df['score_bucket'] = pd.qcut(
+                df[score_col], 
+                buckets, 
+                labels=False,
+                duplicates='drop'
+            )
+        except ValueError:
+            df['score_bucket'] = pd.cut(
+                df[score_col],
+                bins=buckets,
+                labels=False
+            )
+    
+    stats = []
+    for bucket in sorted(df['score_bucket'].dropna().unique()):
+        bucket_df = df[df['score_bucket'] == bucket]
+        
+        n_trades = len(bucket_df)
+        if n_trades == 0:
+            continue
+        
+        min_score = bucket_df[score_col].min()
+        max_score = bucket_df[score_col].max()
+        
+        wins = bucket_df[bucket_df[pnl_col] > 0]
+        losses = bucket_df[bucket_df[pnl_col] <= 0]
+        
+        win_rate = len(wins) / n_trades * 100 if n_trades > 0 else 0
+        
+        total_pnl = bucket_df[pnl_col].sum()
+        avg_r = bucket_df[r_col].mean() if r_col in bucket_df.columns else 0
+        
+        gross_profit = wins[pnl_col].sum() if len(wins) > 0 else 0
+        gross_loss = abs(losses[pnl_col].sum()) if len(losses) > 0 else 0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (999 if gross_profit > 0 else 0)
+        
+        stats.append({
+            'bucket': int(bucket),
+            'score_range': f'{min_score:.0f}-{max_score:.0f}',
+            'min_score': round(min_score, 1),
+            'max_score': round(max_score, 1),
+            'trade_count': n_trades,
+            'win_rate': round(win_rate, 1),
+            'avg_r': round(avg_r, 3),
+            'profit_factor': round(profit_factor, 2),
+            'total_pnl': round(total_pnl, 2)
+        })
+    
+    result = pd.DataFrame(stats)
+    if not result.empty:
+        result = result.sort_values('min_score')
+    
+    return result
+
+
+def compute_threshold_performance(
+    trades_df: pd.DataFrame,
+    thresholds: List[float] = [0, 50, 60, 70, 80],
+    score_col: str = 'pattern_score',
+    pnl_col: str = 'pnl_dollars',
+    r_col: str = 'pnl_r_multiple'
+) -> pd.DataFrame:
+    """
+    Compare performance at different minimum score thresholds.
+    
+    Args:
+        trades_df: DataFrame with trade results
+        thresholds: Score thresholds to compare
+        score_col: Column name for pattern score
+        pnl_col: Column name for PnL in dollars
+        r_col: Column name for R-multiple
+    
+    Returns:
+        DataFrame with threshold comparison
+    """
+    if trades_df.empty or score_col not in trades_df.columns:
+        return pd.DataFrame()
+    
+    results = []
+    
+    for thresh in thresholds:
+        df = trades_df[trades_df[score_col] >= thresh] if thresh > 0 else trades_df
+        
+        n_trades = len(df)
+        if n_trades == 0:
+            results.append({
+                'min_score': thresh,
+                'trade_count': 0,
+                'win_rate': 0,
+                'avg_r': 0,
+                'profit_factor': 0,
+                'total_pnl': 0
+            })
+            continue
+        
+        wins = df[df[pnl_col] > 0]
+        losses = df[df[pnl_col] <= 0]
+        win_rate = len(wins) / n_trades * 100
+        
+        total_pnl = df[pnl_col].sum()
+        avg_r = df[r_col].mean() if r_col in df.columns else 0
+        
+        gross_profit = wins[pnl_col].sum() if len(wins) > 0 else 0
+        gross_loss = abs(losses[pnl_col].sum()) if len(losses) > 0 else 0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (999 if gross_profit > 0 else 0)
+        
+        results.append({
+            'min_score': thresh,
+            'trade_count': n_trades,
+            'win_rate': round(win_rate, 1),
+            'avg_r': round(avg_r, 3),
+            'profit_factor': round(profit_factor, 2),
+            'total_pnl': round(total_pnl, 2)
+        })
+    
+    return pd.DataFrame(results)

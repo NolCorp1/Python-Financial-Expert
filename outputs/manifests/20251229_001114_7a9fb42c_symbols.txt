@@ -1,0 +1,25 @@
+# Symbols for run: 20251229_001114_7a9fb42c
+# Generated: 2025-12-29T00:11:20.095186
+# Mode: backtest
+# Count: 20
+
+AAPL
+ADBE
+AMAT
+AMD
+AMZN
+AVGO
+CRM
+CSCO
+GOOGL
+INTC
+INTU
+META
+MSFT
+MU
+NFLX
+NVDA
+PYPL
+QCOM
+TSLA
+TXN

@@ -102,6 +102,45 @@ report = generate_cache_report(symbols, auto_repair=True)
 ```
 Report saved to: `outputs/price_cache_report.csv`
 
+## Pattern Quality Scoring (Task 15)
+
+Every pattern is scored (0-100) using pre-entry data only. Higher scores indicate higher quality setups.
+
+### Score Features (v1 weights)
+- **Symmetry (20%)**: How closely bottom prices match
+- **Neckline (20%)**: Height of peak above bottoms
+- **Separation (15%)**: Time between bottoms (optimal ~75 days)
+- **Breakout Strength (15%)**: Candle quality on breakout (CONFIRMED only)
+- **Volume (20%)**: Volume signature at key points
+- **Trend Context (10%)**: Position vs 200-day MA
+
+### Filtering Signals by Score
+```bash
+# Only trade patterns with score >= 60
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --min-pattern-score 60
+
+# Keep only top 3 signals per day
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --top-k-per-day 3
+
+# Combine both filters
+python main.py --universe nasdaq --max-stocks 200 --backtest-v2 --min-pattern-score 50 --top-k-per-day 5
+```
+
+### Score Reports
+After backtest, two reports are generated:
+- `outputs/score_bucket_report.csv`: Performance by score decile
+- `outputs/score_threshold_report.csv`: Performance at different minimum thresholds
+
+**Interpreting Reports:**
+- Look for monotonic improvement (higher scores -> better performance)
+- If higher scores don't correlate with better results, weights may need tuning
+- Use threshold comparison to find optimal --min-pattern-score value
+
+### Score in trades.csv
+Each trade includes:
+- `pattern_score`: Overall score (0-100)
+- `score_symmetry`, `score_neckline`, `score_separation`, etc.: Individual feature scores (0-1)
+
 ## Overview
 A comprehensive Python program that scans for double bottom ("W") chart patterns in NASDAQ-listed stocks using historical price data from yfinance. The scanner uses algorithmic pattern detection with scipy, RSI divergence confirmation, and volume analysis. Includes a full backtesting engine to evaluate strategy performance.
 

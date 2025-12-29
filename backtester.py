@@ -386,6 +386,9 @@ def run_backtest(
         pnl_r_multiple = total_pnl_dollars / risk_amount if risk_amount > 0 else 0.0
         hold_days = (exit_date - pos.entry_date).days
         
+        pattern_score = pos.meta.get('pattern_score', 0) if pos.meta else 0
+        score_features = pos.meta.get('score_features', {}) if pos.meta else {}
+        
         return {
             'symbol': sym,
             'pattern_id': pos.pattern_id,
@@ -407,6 +410,13 @@ def run_backtest(
             'slippage_bps': pos.slippage_bps,
             'commissions': round(pos.entry_commission + exit_commission, 2),
             'partial_tp_done': pos.partial_tp_done,
+            'pattern_score': round(pattern_score, 2) if pattern_score else 0,
+            'score_symmetry': round(score_features.get('symmetry', 0), 4),
+            'score_neckline': round(score_features.get('neckline', 0), 4),
+            'score_separation': round(score_features.get('separation', 0), 4),
+            'score_breakout': round(score_features.get('breakout_strength', 0), 4),
+            'score_volume': round(score_features.get('volume', 0), 4),
+            'score_trend': round(score_features.get('trend_context', 0), 4),
             'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
         }
     
