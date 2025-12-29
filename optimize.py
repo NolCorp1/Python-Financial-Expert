@@ -35,7 +35,7 @@ from universe import (
     refresh_symbol_cache,
 )
 from strategy import generate_signals
-from backtester import run_backtest, BacktestConfig, group_signals_by_symbol
+from backtester import run_backtest, BacktestConfig, group_signals_by_symbol, BacktestContext, build_backtest_context
 from metrics import compute_trade_metrics, compute_equity_metrics, compute_split_metrics
 from price_cache import (
     preload_price_data,
@@ -326,7 +326,8 @@ def run_scan_and_backtest(
     price_data: Dict[str, pd.DataFrame],
     params: Dict[str, Any],
     backtest_cfg: BacktestConfig,
-    return_diagnostics: bool = False
+    return_diagnostics: bool = False,
+    ctx: Optional[BacktestContext] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run pattern detection, signal generation, and backtest for given params.
@@ -336,6 +337,7 @@ def run_scan_and_backtest(
         params: Optimization parameters (detection + portfolio/exit)
         backtest_cfg: Base backtest configuration
         return_diagnostics: If True, return (trades_df, equity_df, diagnostics)
+        ctx: Optional BacktestContext with precomputed artifacts for speedup
         
     Returns:
         Tuple of (trades_df, equity_df) or (trades_df, equity_df, diagnostics)
@@ -381,7 +383,7 @@ def run_scan_and_backtest(
     
     signals_by_symbol = group_signals_by_symbol(all_signals)
     
-    result = run_backtest(signals_by_symbol, price_data, cfg, return_diagnostics=return_diagnostics)
+    result = run_backtest(signals_by_symbol, price_data, cfg, return_diagnostics=return_diagnostics, ctx=ctx)
     
     if return_diagnostics:
         return result
@@ -584,6 +586,9 @@ def run_window_optimization(
             'error': 'No data in period'
         }
     
+    train_ctx = build_backtest_context(train_data, backtest_cfg)
+    test_ctx = build_backtest_context(test_data, backtest_cfg)
+    
     best_train_score = float('-inf')
     best_params = None
     best_train_trades_df = pd.DataFrame()
@@ -592,7 +597,7 @@ def run_window_optimization(
     iterator = param_grid if not verbose else tqdm(param_grid, desc="  Grid search", leave=False)
     
     for params in iterator:
-        trades_df, equity_df = run_scan_and_backtest(train_data, params, backtest_cfg)
+        trades_df, equity_df = run_scan_and_backtest(train_data, params, backtest_cfg, ctx=train_ctx)
         
         score, _ = score_oos(
             trades_df, equity_df,
@@ -624,7 +629,7 @@ def run_window_optimization(
     train_tr = compute_trade_metrics(best_train_trades_df) if not best_train_trades_df.empty else {}
     train_eq = compute_equity_metrics(best_train_equity_df) if not best_train_equity_df.empty else {}
     
-    test_result = run_scan_and_backtest(test_data, best_params, backtest_cfg, return_diagnostics=True)
+    test_result = run_scan_and_backtest(test_data, best_params, backtest_cfg, return_diagnostics=True, ctx=test_ctx)
     if len(test_result) == 3:
         test_trades, test_equity, test_diag = test_result
     else:
