@@ -535,6 +535,38 @@ def main():
     parser.add_argument('--min-allocation-scale', type=float, default=0.25,
                        help='Floor for allocation scaling (0.25 = 25%% of original)')
     
+    # Capital recycling (Task 21)
+    parser.add_argument('--use-capital-recycling', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Enable capital recycling (opportunity-cost exits)')
+    parser.add_argument('--recycle-trigger-mode', type=str, default='BUDGET_BLOCKED',
+                       choices=['BUDGET_BLOCKED', 'ALWAYS'],
+                       help='When to trigger recycling: BUDGET_BLOCKED (when candidate blocked) or ALWAYS')
+    parser.add_argument('--recycle-min-score-gap', type=float, default=0.15,
+                       help='Min (new_score/old_score - 1.0) to trigger recycling')
+    parser.add_argument('--recycle-min-hold-days', type=int, default=10,
+                       help='Min days held before position eligible for recycling')
+    parser.add_argument('--recycle-only-forming', type=str, default='false',
+                       choices=['true', 'false'],
+                       help='Only recycle FORMING positions')
+    parser.add_argument('--recycle-exclude-confirmed-winners', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Exclude confirmed winners (MFE >= 0.5R) from recycling')
+    parser.add_argument('--recycle-rank-metric', type=str, default='score_per_risk',
+                       choices=['score_per_risk', 'age', 'mfe', 'progress'],
+                       help='Metric for ranking positions to recycle (worst first)')
+    parser.add_argument('--recycle-action', type=str, default='PARTIAL',
+                       choices=['PARTIAL', 'EXIT'],
+                       help='Recycling action: PARTIAL (sell fraction) or EXIT (close fully)')
+    parser.add_argument('--recycle-partial-fraction', type=float, default=0.50,
+                       help='Fraction to sell when doing partial recycle (0.50 = 50%%)')
+    parser.add_argument('--recycle-min-remaining-fraction', type=float, default=0.25,
+                       help='Min remaining position after partial recycle (0.25 = 25%%)')
+    parser.add_argument('--recycle-no-progress-days', type=int, default=25,
+                       help='Days with no progress before eligible for recycle')
+    parser.add_argument('--recycle-no-progress-r', type=float, default=0.25,
+                       help='Min R progress to avoid recycle eligibility')
+    
     parser.add_argument('--symbols-seed', type=int, default=None,
                        help='Random seed for deterministic symbol subset selection')
     parser.add_argument('--parity-check', action='store_true',
@@ -1037,7 +1069,19 @@ def main():
             allocation_rank_metric=args.allocation_rank_metric,
             max_signals_per_day=args.max_signals_per_day,
             allocation_scaling_mode=args.allocation_scaling_mode.upper(),
-            min_allocation_scale=args.min_allocation_scale
+            min_allocation_scale=args.min_allocation_scale,
+            use_capital_recycling=args.use_capital_recycling.lower() == 'true',
+            recycle_trigger_mode=args.recycle_trigger_mode.upper(),
+            recycle_min_score_gap=args.recycle_min_score_gap,
+            recycle_min_hold_days=args.recycle_min_hold_days,
+            recycle_only_forming=args.recycle_only_forming.lower() == 'true',
+            recycle_exclude_confirmed_winners=args.recycle_exclude_confirmed_winners.lower() == 'true',
+            recycle_rank_metric=args.recycle_rank_metric,
+            recycle_action=args.recycle_action.upper(),
+            recycle_partial_fraction=args.recycle_partial_fraction,
+            recycle_min_remaining_position_fraction=args.recycle_min_remaining_fraction,
+            recycle_no_progress_days=args.recycle_no_progress_days,
+            recycle_no_progress_r=args.recycle_no_progress_r
         )
         
         score_status = "ON" if cfg.use_score_risk_scaling else "OFF"
@@ -1049,6 +1093,10 @@ def main():
         forming_budget = f"{cfg.daily_risk_budget_forming*100:.1f}%" if cfg.daily_risk_budget_forming else "N/A"
         print(f"Portfolio allocator: {alloc_status} | daily_budget={cfg.daily_risk_budget*100:.1f}% | "
               f"forming_budget={forming_budget} | scaling={cfg.allocation_scaling_mode}")
+        
+        recycle_status = "ON" if cfg.use_capital_recycling else "OFF"
+        print(f"Capital recycling: {recycle_status} | trigger={cfg.recycle_trigger_mode} | "
+              f"gap={cfg.recycle_min_score_gap:.0%} | action={cfg.recycle_action}")
         
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)
         

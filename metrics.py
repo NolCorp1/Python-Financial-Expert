@@ -1038,3 +1038,63 @@ def check_score_monotonicity(bucket_df: pd.DataFrame) -> Dict[str, Any]:
         )
     
     return result
+
+
+def compute_recycling_metrics(trades_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Compute metrics for capital recycling events.
+    
+    Args:
+        trades_df: DataFrame with trades including exit_reason column
+    
+    Returns:
+        Dict with recycling metrics:
+        - recycle_events_count: Total number of recycling events
+        - pct_trades_recycled: Percentage of all trades that were recycles
+        - recycle_partial_count: Number of partial recycles
+        - recycle_exit_count: Number of full exit recycles
+        - avg_pnl_r_recycled: Average R-multiple for recycled trades
+        - avg_pnl_r_nonrecycled: Average R-multiple for non-recycled trades
+        - recycled_contribution_pct: Percentage of total PnL from recycled trades
+    """
+    result = {
+        'recycle_events_count': 0,
+        'pct_trades_recycled': 0.0,
+        'recycle_partial_count': 0,
+        'recycle_exit_count': 0,
+        'avg_pnl_r_recycled': 0.0,
+        'avg_pnl_r_nonrecycled': 0.0,
+        'recycled_contribution_pct': 0.0,
+    }
+    
+    if trades_df.empty or 'exit_reason' not in trades_df.columns:
+        return result
+    
+    # Identify recycled trades
+    recycled_mask = trades_df['exit_reason'].str.contains('RECYCLE', case=False, na=False)
+    recycled_df = trades_df[recycled_mask]
+    nonrecycled_df = trades_df[~recycled_mask]
+    
+    result['recycle_events_count'] = len(recycled_df)
+    result['pct_trades_recycled'] = round(100.0 * len(recycled_df) / len(trades_df), 2) if len(trades_df) > 0 else 0.0
+    
+    # Count by type
+    if 'exit_reason' in trades_df.columns:
+        result['recycle_partial_count'] = int((trades_df['exit_reason'] == 'RECYCLE_PARTIAL').sum())
+        result['recycle_exit_count'] = int((trades_df['exit_reason'] == 'RECYCLE_EXIT').sum())
+    
+    # Average R-multiples
+    if 'pnl_r_multiple' in trades_df.columns:
+        if len(recycled_df) > 0:
+            result['avg_pnl_r_recycled'] = round(recycled_df['pnl_r_multiple'].mean(), 4)
+        if len(nonrecycled_df) > 0:
+            result['avg_pnl_r_nonrecycled'] = round(nonrecycled_df['pnl_r_multiple'].mean(), 4)
+    
+    # Contribution to total PnL
+    if 'pnl_dollars' in trades_df.columns:
+        total_pnl = trades_df['pnl_dollars'].sum()
+        if abs(total_pnl) > 0.01:
+            recycled_pnl = recycled_df['pnl_dollars'].sum() if len(recycled_df) > 0 else 0.0
+            result['recycled_contribution_pct'] = round(100.0 * recycled_pnl / total_pnl, 2)
+    
+    return result

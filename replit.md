@@ -41,6 +41,15 @@ I prefer iterative development, so please propose changes and explain them thoro
   - `max_signals_per_day`: Optional cap on signals after ranking
   - Trade output includes: allocation_score, allocation_scale, allocation_rank, allocation_budget_used
   - No lookahead: uses only pre-entry data for ranking and allocation
+- **Capital Recycling Engine** (Task 21): Implements opportunity-cost exits to free budget for better signals. When a high-quality candidate is budget-blocked, the system recycles (partial or full exit) lower-quality open positions to make room. Key parameters:
+  - `recycle_trigger_mode`: BUDGET_BLOCKED (default) or ALWAYS
+  - `recycle_min_score_gap` (default 0.15): Min score improvement to trigger recycle
+  - `recycle_min_hold_days` (default 10): Min days before position is recyclable
+  - `recycle_exclude_confirmed_winners`: Protect confirmed positions with MFE >= 0.5R
+  - `recycle_action`: PARTIAL (sell fraction) or EXIT (close fully)
+  - `recycle_partial_fraction` (default 0.50): Fraction to sell in partial recycle
+  - Trade output includes: RECYCLE_PARTIAL/RECYCLE_EXIT exit reasons, recycle_triggered_by_symbol, recycle_replaced_by_score
+  - No lookahead: recycling decisions based on prior-close data only
 - **Market Regime Filter**: Incorporates a market regime filter with soft-gating using MA-based trend and volatility detection to adjust risk.
 - **Correlation & Cluster Caps**: Implements portfolio-level risk management by limiting positions based on symbol correlation and cluster membership.
 - **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules for "FORMING" patterns.

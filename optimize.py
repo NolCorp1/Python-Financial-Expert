@@ -198,6 +198,15 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
         'min_allocation_scale': [0.25, 0.40],
     }
     
+    capital_recycling_params = {
+        'use_capital_recycling': [True],
+        'recycle_min_score_gap': [0.10, 0.15, 0.25],
+        'recycle_min_hold_days': [10, 15],
+        'recycle_action': ['PARTIAL'],
+        'recycle_partial_fraction': [0.33, 0.50],
+        'recycle_exclude_confirmed_winners': [True],
+    }
+    
     all_base_params = {}
     all_base_params.update(detection_params)
     all_base_params.update(portfolio_params)
@@ -206,6 +215,7 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
     all_base_params.update(scoring_params)
     all_base_params.update(score_risk_params)
     all_base_params.update(portfolio_allocator_params)
+    all_base_params.update(capital_recycling_params)
     
     grid = []
     for _ in range(grid_size_limit * 2):
@@ -371,6 +381,32 @@ def params_to_backtest_config(params: Dict[str, Any], base_cfg: BacktestConfig) 
         updates['allocation_scaling_mode'] = params['allocation_scaling_mode']
     if 'min_allocation_scale' in params:
         updates['min_allocation_scale'] = params['min_allocation_scale']
+    
+    # Capital recycling params (Task 21)
+    if 'use_capital_recycling' in params:
+        updates['use_capital_recycling'] = params['use_capital_recycling']
+    if 'recycle_trigger_mode' in params:
+        updates['recycle_trigger_mode'] = params['recycle_trigger_mode']
+    if 'recycle_min_score_gap' in params:
+        updates['recycle_min_score_gap'] = params['recycle_min_score_gap']
+    if 'recycle_min_hold_days' in params:
+        updates['recycle_min_hold_days'] = params['recycle_min_hold_days']
+    if 'recycle_only_forming' in params:
+        updates['recycle_only_forming'] = params['recycle_only_forming']
+    if 'recycle_exclude_confirmed_winners' in params:
+        updates['recycle_exclude_confirmed_winners'] = params['recycle_exclude_confirmed_winners']
+    if 'recycle_rank_metric' in params:
+        updates['recycle_rank_metric'] = params['recycle_rank_metric']
+    if 'recycle_action' in params:
+        updates['recycle_action'] = params['recycle_action']
+    if 'recycle_partial_fraction' in params:
+        updates['recycle_partial_fraction'] = params['recycle_partial_fraction']
+    if 'recycle_min_remaining_position_fraction' in params:
+        updates['recycle_min_remaining_position_fraction'] = params['recycle_min_remaining_position_fraction']
+    if 'recycle_no_progress_days' in params:
+        updates['recycle_no_progress_days'] = params['recycle_no_progress_days']
+    if 'recycle_no_progress_r' in params:
+        updates['recycle_no_progress_r'] = params['recycle_no_progress_r']
     
     if updates:
         return replace(base_cfg, **updates)
@@ -1255,6 +1291,19 @@ def build_strategy_config(
             'max_signals_per_day': best_params.get('max_signals_per_day', None),
             'allocation_scaling_mode': best_params.get('allocation_scaling_mode', 'PROPORTIONAL'),
             'min_allocation_scale': best_params.get('min_allocation_scale', 0.25),
+        },
+        
+        'capital_recycling': {
+            'enabled': best_params.get('use_capital_recycling', True),
+            'trigger_mode': best_params.get('recycle_trigger_mode', 'BUDGET_BLOCKED'),
+            'min_score_gap': best_params.get('recycle_min_score_gap', 0.15),
+            'min_hold_days': best_params.get('recycle_min_hold_days', 10),
+            'only_forming': best_params.get('recycle_only_forming', False),
+            'exclude_confirmed_winners': best_params.get('recycle_exclude_confirmed_winners', True),
+            'rank_metric': best_params.get('recycle_rank_metric', 'score_per_risk'),
+            'action': best_params.get('recycle_action', 'PARTIAL'),
+            'partial_fraction': best_params.get('recycle_partial_fraction', 0.50),
+            'min_remaining_fraction': best_params.get('recycle_min_remaining_position_fraction', 0.25),
         },
         
         'liquidity': {

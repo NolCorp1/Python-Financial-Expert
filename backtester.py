@@ -114,6 +114,20 @@ class BacktestConfig:
     max_signals_per_day: Optional[int] = None
     allocation_scaling_mode: str = "PROPORTIONAL"
     min_allocation_scale: float = 0.25
+    
+    # Capital recycling / opportunity-cost exits (Task 21)
+    use_capital_recycling: bool = True
+    recycle_trigger_mode: str = "BUDGET_BLOCKED"  # ALWAYS | BUDGET_BLOCKED
+    recycle_min_score_gap: float = 0.15  # (new_score / old_score) - 1.0
+    recycle_min_hold_days: int = 10  # don't churn too early
+    recycle_only_forming: bool = False  # if True, only recycle FORMING positions
+    recycle_exclude_confirmed_winners: bool = True  # keep strong confirmed winners running
+    recycle_rank_metric: str = "score_per_risk"  # score_per_risk | age | mfe | progress
+    recycle_action: str = "PARTIAL"  # PARTIAL | EXIT
+    recycle_partial_fraction: float = 0.50  # sell this fraction when recycling
+    recycle_min_remaining_position_fraction: float = 0.25  # don't shrink below this
+    recycle_no_progress_days: int = 25
+    recycle_no_progress_r: float = 0.25
 
 
 def compute_signal_allocation_score(signal: 'TradeSignal') -> float:
@@ -174,6 +188,59 @@ def compute_score_risk_mult(
     s = max(0.0, min(100.0, s)) / 100.0
     shaped = s ** float(alpha)
     return float(min_mult) + (float(max_mult) - float(min_mult)) * shaped
+
+
+def compute_position_recycle_score(pos: 'OpenPosition', metric: str = "score_per_risk") -> float:
+    """
+    Compute a score for open position recycling priority.
+    HIGHER score = better position worth keeping (lower recycle priority).
+    LOWER score = worse position (higher recycle priority = recycle first).
+    
+    Uses only info known up to prior close (no lookahead).
+    
+    Args:
+        pos: OpenPosition object
+        metric: Ranking metric - score_per_risk | age | mfe | progress
+    
+    Returns:
+        Position quality score (higher = keep, lower = recycle)
+    """
+    meta = pos.meta if pos.meta else {}
+    ps = meta.get("pattern_score", None)
+    alloc_score = meta.get("allocation_score", 1.0)
+    risk_frac = meta.get("risk_fraction_applied", 0.01)
+    
+    if metric == "age":
+        # Older positions get lower score (recycle first)
+        return 1.0 / (1.0 + 0.05 * max(0, pos.bars_held))
+    
+    elif metric == "mfe":
+        # Low MFE positions get recycled first
+        return float(pos.mfe_r) + 1.0
+    
+    elif metric == "progress":
+        # Low progress (MFE / bars_held) get recycled first
+        progress = pos.mfe_r / max(1, pos.bars_held)
+        return progress + 0.5
+    
+    else:  # "score_per_risk" default
+        base = float(alloc_score) if alloc_score is not None else 1.0
+        
+        if ps is not None:
+            try:
+                base *= (float(ps) / 100.0)
+            except (ValueError, TypeError):
+                pass
+        
+        # Penalize tying up lots of risk for low score
+        if risk_frac and float(risk_frac) > 0:
+            base = base / float(risk_frac)
+        
+        # Mild age penalty to prefer freeing stale positions
+        age = pos.bars_held
+        base *= 1.0 / (1.0 + 0.01 * max(0, age - 20))
+        
+        return float(base)
 
 
 @dataclass
@@ -600,6 +667,11 @@ def run_backtest(
     # List of (date, risk_used) tuples for last 5 trading days
     weekly_risk_history: List[Tuple[pd.Timestamp, float]] = []
     
+    # Recycling counters (Task 21)
+    recycle_partial_count = 0
+    recycle_exit_count = 0
+    recycle_freed_budget = 0.0
+    
     corr_matrix = pd.DataFrame()
     clusters: Dict[str, int] = {}
     
@@ -688,8 +760,97 @@ def run_backtest(
             'allocation_rank': int(pos.meta.get('allocation_rank', 0)) if pos.meta else 0,
             'allocation_budget_used': round(pos.meta.get('allocation_budget_used', 0.0), 6) if pos.meta else 0.0,
             'daily_risk_budget': round(cfg.daily_risk_budget, 4),
+            'recycle_triggered_by_symbol': pos.meta.get('recycle_triggered_by_symbol', None) if pos.meta else None,
+            'recycle_replaced_by_score': round(pos.meta.get('recycle_replaced_by_score', 0.0), 4) if pos.meta else None,
+            'recycle_old_score': round(pos.meta.get('recycle_old_score', 0.0), 4) if pos.meta else None,
             'meta_json': json.dumps(_convert_to_serializable(pos.meta)) if pos.meta else '{}'
         }
+    
+    def partial_recycle_position(sym: str, pos: OpenPosition, recycle_date: pd.Timestamp,
+                                  recycle_price: float, recycle_fraction: float,
+                                  triggered_by_symbol: str, new_score: float, old_score: float) -> Tuple[Optional[dict], float]:
+        """
+        Partially recycle a position: sell a fraction, keep the rest.
+        Returns (trade_record or None, freed_budget_fraction).
+        """
+        nonlocal cash
+        
+        shares_to_sell = int(math.floor(pos.shares_remaining * recycle_fraction))
+        min_remaining = int(math.ceil(pos.shares_initial * cfg.recycle_min_remaining_position_fraction))
+        
+        # Ensure we don't go below minimum remaining
+        if pos.shares_remaining - shares_to_sell < min_remaining:
+            shares_to_sell = pos.shares_remaining - min_remaining
+        
+        if shares_to_sell <= 0:
+            return None, 0.0
+        
+        # Calculate PnL for this partial exit
+        exit_commission = cfg.commission_per_trade * (shares_to_sell / pos.shares_remaining)
+        proceeds = recycle_price * shares_to_sell - exit_commission
+        cash += proceeds
+        
+        partial_pnl = (recycle_price - pos.entry_fill) * shares_to_sell - exit_commission
+        pos.realized_pnl_dollars += partial_pnl
+        
+        # Calculate freed budget (proportional to shares sold)
+        original_budget = pos.meta.get('allocation_budget_used', 0.0) if pos.meta else 0.0
+        freed_frac = shares_to_sell / pos.shares_initial if pos.shares_initial > 0 else 0.0
+        freed_budget = original_budget * freed_frac
+        
+        # Update position
+        pos.shares_remaining -= shares_to_sell
+        
+        # Add recycle metadata
+        if pos.meta is None:
+            pos.meta = {}
+        pos.meta['recycle_triggered_by_symbol'] = triggered_by_symbol
+        pos.meta['recycle_replaced_by_score'] = new_score
+        pos.meta['recycle_old_score'] = old_score
+        
+        # Create partial exit trade record
+        risk_amount = (pos.entry_fill - pos.original_stop_loss) * pos.shares_initial
+        pnl_r = partial_pnl / risk_amount if risk_amount > 0 else 0.0
+        
+        trade_record = {
+            'symbol': sym,
+            'pattern_id': pos.pattern_id + '_RECYCLE',
+            'entry_kind': pos.entry_kind,
+            'entry_date': pos.entry_date,
+            'entry_price': round(pos.entry_fill, 2),
+            'stop_loss': round(pos.stop_loss, 2),
+            'original_stop_loss': round(pos.original_stop_loss, 2),
+            'take_profit': round(pos.take_profit, 2),
+            'shares': shares_to_sell,
+            'exit_date': recycle_date,
+            'exit_price': round(recycle_price, 2),
+            'exit_reason': 'RECYCLE_PARTIAL',
+            'pnl_dollars': round(partial_pnl, 2),
+            'pnl_r_multiple': round(pnl_r, 2),
+            'hold_days': (recycle_date - pos.entry_date).days,
+            'bars_held': pos.bars_held,
+            'mfe_r': round(pos.mfe_r, 2),
+            'slippage_bps': pos.slippage_bps,
+            'commissions': round(exit_commission, 2),
+            'partial_tp_done': pos.partial_tp_done,
+            'pattern_score': round(pos.meta.get('pattern_score', 0), 2) if pos.meta else 0,
+            'score_symmetry': 0, 'score_neckline': 0, 'score_separation': 0,
+            'score_breakout': 0, 'score_volume': 0, 'score_trend': 0,
+            'risk_fraction_applied': round(pos.meta.get('risk_fraction_applied', 0.0), 6) if pos.meta else 0.0,
+            'score_risk_mult': round(pos.meta.get('score_risk_mult', 1.0), 4) if pos.meta else 1.0,
+            'regime_risk_mult': round(pos.meta.get('regime_risk_mult', 1.0), 4) if pos.meta else 1.0,
+            'allocation_score': round(pos.meta.get('allocation_score', 0.0), 4) if pos.meta else 0.0,
+            'allocation_scale': round(pos.meta.get('allocation_scale', 1.0), 4) if pos.meta else 1.0,
+            'allocation_rank': int(pos.meta.get('allocation_rank', 0)) if pos.meta else 0,
+            'allocation_budget_used': round(freed_budget, 6),
+            'daily_risk_budget': round(cfg.daily_risk_budget, 4),
+            'recycle_triggered_by_symbol': triggered_by_symbol,
+            'recycle_replaced_by_score': round(new_score, 4),
+            'recycle_old_score': round(old_score, 4),
+            'meta_json': '{}'
+        }
+        
+        return trade_record, freed_budget
     
     for current_date in all_dates:
         positions_to_close = []
@@ -992,10 +1153,113 @@ def run_backtest(
             symbols_in_candidates.add(sym)
         
         # Apply portfolio allocation if enabled
+        all_original_candidates = candidates.copy()
         if cfg.use_portfolio_allocator and candidates:
             # Compute rolling weekly risk used (last 5 trading days)
             weekly_risk_used = sum(risk for _, risk in weekly_risk_history[-4:])  # -4 because today not yet added
             candidates = allocate_daily_signals(candidates, current_equity, cfg, weekly_risk_used)
+        
+        # Capital recycling: try to free budget for blocked candidates (Task 21)
+        if cfg.use_capital_recycling and cfg.use_portfolio_allocator and len(open_positions) > 0:
+            # Find blocked candidates (were in original list but not allocated)
+            allocated_ids = {(c.signal.symbol, c.signal.pattern_id) for c in candidates}
+            blocked = [c for c in all_original_candidates 
+                      if (c.signal.symbol, c.signal.pattern_id) not in allocated_ids]
+            
+            # Get today's open price for recycling
+            recycle_prices = {}
+            for sym, pos in open_positions.items():
+                if sym in price_data_by_symbol and current_date in price_data_by_symbol[sym].index:
+                    recycle_prices[sym] = price_data_by_symbol[sym].loc[current_date, 'Open']
+            
+            # Process blocked candidates by score (best first)
+            blocked.sort(key=lambda c: c.allocation_score, reverse=True)
+            
+            for blocked_cand in blocked:
+                if cfg.recycle_trigger_mode.upper() != "BUDGET_BLOCKED":
+                    break
+                
+                new_score = blocked_cand.allocation_score
+                
+                # Find recyclable positions (worst first based on recycle score)
+                recyclable = []
+                for sym, pos in open_positions.items():
+                    # Eligibility checks
+                    if pos.bars_held < cfg.recycle_min_hold_days:
+                        continue
+                    if cfg.recycle_only_forming and pos.entry_kind != "FORMING":
+                        continue
+                    if cfg.recycle_exclude_confirmed_winners:
+                        if pos.entry_kind == "CONFIRMED" and pos.mfe_r >= 0.5:
+                            continue
+                    if sym not in recycle_prices:
+                        continue
+                    
+                    pos_recycle_score = compute_position_recycle_score(pos, cfg.recycle_rank_metric)
+                    
+                    # Check score gap requirement
+                    if pos_recycle_score > 0:
+                        score_gap = (new_score / pos_recycle_score) - 1.0
+                    else:
+                        score_gap = 999.0
+                    
+                    if score_gap >= cfg.recycle_min_score_gap:
+                        recyclable.append((sym, pos, pos_recycle_score))
+                
+                # Sort by recycle score (worst = lowest first)
+                recyclable.sort(key=lambda x: x[2])
+                
+                # Try to free enough budget for this candidate
+                freed_total = 0.0
+                needed_budget = blocked_cand.risk_fraction
+                
+                for sym, pos, old_score in recyclable:
+                    if freed_total >= needed_budget:
+                        break
+                    
+                    recycle_price = recycle_prices.get(sym)
+                    if recycle_price is None:
+                        continue
+                    
+                    if cfg.recycle_action.upper() == "EXIT":
+                        # Full exit via recycle
+                        trade_record = close_position(sym, pos, current_date, 
+                                                     recycle_price * (1 - cfg.slippage_bps / 10000),
+                                                     'RECYCLE_EXIT')
+                        trade_record['recycle_triggered_by_symbol'] = blocked_cand.signal.symbol
+                        trade_record['recycle_replaced_by_score'] = round(new_score, 4)
+                        trade_record['recycle_old_score'] = round(old_score, 4)
+                        completed_trades.append(trade_record)
+                        
+                        pos_budget = pos.meta.get('allocation_budget_used', 0.0) if pos.meta else 0.0
+                        freed_total += pos_budget
+                        recycle_freed_budget += pos_budget
+                        recycle_exit_count += 1
+                        
+                        del open_positions[sym]
+                    else:
+                        # Partial recycle
+                        trade_record, freed_budget = partial_recycle_position(
+                            sym, pos, current_date,
+                            recycle_price * (1 - cfg.slippage_bps / 10000),
+                            cfg.recycle_partial_fraction,
+                            blocked_cand.signal.symbol, new_score, old_score
+                        )
+                        if trade_record:
+                            completed_trades.append(trade_record)
+                            freed_total += freed_budget
+                            recycle_freed_budget += freed_budget
+                            recycle_partial_count += 1
+                            
+                            # If position fully emptied, remove it
+                            if pos.shares_remaining <= 0:
+                                del open_positions[sym]
+                
+                # If we freed enough, add candidate back to allocation
+                if freed_total >= needed_budget * 0.5:  # At least 50% freed
+                    blocked_cand.allocation_scale = min(1.0, freed_total / blocked_cand.risk_fraction)
+                    blocked_cand.allocation_budget_used = blocked_cand.risk_fraction * blocked_cand.allocation_scale
+                    candidates.append(blocked_cand)
         
         # Execute entries for allocated candidates
         for cand in candidates:
@@ -1135,6 +1399,14 @@ def run_backtest(
         if reduced_regime_confirmed_highvol > 0:
             print(f"    - CONFIRMED in high vol (x{cfg.regime_highvol_confirmed_risk_mult:.2f}): {reduced_regime_confirmed_highvol}")
     
+    if recycle_partial_count > 0 or recycle_exit_count > 0:
+        print("\n  CAPITAL RECYCLING:")
+        if recycle_partial_count > 0:
+            print(f"    - Partial recycles: {recycle_partial_count}")
+        if recycle_exit_count > 0:
+            print(f"    - Full exit recycles: {recycle_exit_count}")
+        print(f"    - Total budget freed: {recycle_freed_budget:.4f} ({recycle_freed_budget*100:.2f}%)")
+    
     trades_df = pd.DataFrame(completed_trades)
     if not trades_df.empty:
         trades_df = trades_df.sort_values('entry_date').reset_index(drop=True)
@@ -1166,6 +1438,9 @@ def run_backtest(
             'avg_effective_risk_confirmed': total_risk_confirmed / count_confirmed if count_confirmed > 0 else 0.0,
             'count_forming': count_forming,
             'count_confirmed': count_confirmed,
+            'recycle_partial_count': recycle_partial_count,
+            'recycle_exit_count': recycle_exit_count,
+            'recycle_freed_budget': recycle_freed_budget,
         }
         return trades_df, equity_df, diagnostics
     
