@@ -1,0 +1,240 @@
+TASK 22 — Opportunity Cost Stress Test & Capital Recycling Validation
+
+GOAL
+Prove that the Capital Recycling Engine (Task 21) activates under realistic pressure
+and that it *improves capital efficiency* rather than causing unnecessary churn.
+
+This task is NOT about adding new strategy logic.
+It is about forcing recycling scenarios, measuring outcomes, and validating that
+capital is being reallocated from worse opportunities to better ones.
+
+NO LOOKAHEAD GUARANTEE
+- All decisions must use information available at or before entry.
+- No future bars, future signals, or future MFE may be used in evaluation logic.
+- Stress testing changes only *constraints*, not signal generation.
+
+FILES TO MODIFY
+- backtester.py
+- metrics.py
+- main.py
+- optimize.py
+- replit.md
+
+──────────────────────────────────────────────────────────────────────────────
+WHY THIS TASK EXISTS
+──────────────────────────────────────────────────────────────────────────────
+Task 21 added a powerful recycling engine, but:
+- Demo universes rarely saturate budgets
+- Recycling may not activate often in light scenarios
+- Without pressure testing, we don’t know if recycling helps or hurts
+
+Task 22 answers:
+1) When recycling fires, does it replace worse capital with better capital?
+2) Does recycling improve return per unit of deployed risk?
+3) Is PARTIAL recycling superior to EXIT recycling?
+4) Under what pressure conditions does recycling add value?
+
+──────────────────────────────────────────────────────────────────────────────
+PART 1 — Stress Test Modes
+──────────────────────────────────────────────────────────────────────────────
+
+Add stress-testing options to BacktestConfig:
+
+    # Stress test controls
+    recycling_stress_mode: str = "NONE"
+        # NONE
+        # LOW_BUDGET
+        # HIGH_SIGNAL_DENSITY
+        # BOTH
+
+    recycling_stress_daily_budget_mult: float = 0.50
+        # Applied when stress mode includes LOW_BUDGET
+
+    recycling_stress_disable_topk: bool = True
+        # Disable top_k_per_day / week limits to increase congestion
+
+    recycling_stress_start_date: Optional[str] = None
+    recycling_stress_end_date: Optional[str] = None
+        # If set, apply stress only during this window
+
+Behavior:
+- Stress mode modifies only portfolio constraints
+- Signal detection, scoring, and sizing remain unchanged
+- Must be reversible and deterministic
+
+──────────────────────────────────────────────────────────────────────────────
+PART 2 — Stress Logic Implementation (backtester.py)
+──────────────────────────────────────────────────────────────────────────────
+
+In run_backtest():
+
+1) Determine if stress mode is active for current_date
+2) If LOW_BUDGET:
+   - effective_daily_budget = daily_risk_budget * recycling_stress_daily_budget_mult
+3) If HIGH_SIGNAL_DENSITY:
+   - Temporarily ignore max_signals_per_day
+   - Ignore top_k_per_day / top_k_per_week caps
+4) If BOTH:
+   - Apply both behaviors simultaneously
+
+Ensure:
+- Stress-adjusted budgets are used ONLY for allocation decisions
+- Report both base and stressed budgets in diagnostics
+
+──────────────────────────────────────────────────────────────────────────────
+PART 3 — Recycling Effectiveness Metrics
+──────────────────────────────────────────────────────────────────────────────
+
+Extend metrics.py with:
+
+compute_recycling_effectiveness_metrics(trades_df):
+
+For each recycling event:
+- Identify:
+  - recycled_trade_id
+  - replacing_trade_id (triggering candidate)
+- Compute:
+  - recycle_swap_edge_r =
+        replacing_trade_r_multiple
+      - remaining_r_multiple_of_recycled_trade
+  - capital_reuse_efficiency =
+        incremental_return / freed_risk_fraction
+
+Aggregate metrics:
+- recycle_events_count
+- pct_trades_recycled
+- avg_swap_edge_r
+- median_swap_edge_r
+- pct_positive_swaps
+- avg_capital_reuse_efficiency
+- false_recycle_rate
+    (recycled trade would have outperformed replacement)
+
+Output:
+outputs/recycling_effectiveness_report.csv
+
+──────────────────────────────────────────────────────────────────────────────
+PART 4 — Comparative Scenario Runner
+──────────────────────────────────────────────────────────────────────────────
+
+Add to main.py:
+
+--run-recycling-comparison true/false
+
+When enabled:
+Run three backtests automatically with identical universe, seed, and config:
+1) Recycling OFF
+2) Recycling ON + PARTIAL
+3) Recycling ON + EXIT
+
+For each variant, collect:
+- total_return_pct
+- max_drawdown_pct
+- return_per_allocated_risk
+- recycling_events_count
+- avg_swap_edge_r
+
+Save summary to:
+outputs/recycling_comparison_summary.csv
+
+Print console table comparing the three modes.
+
+──────────────────────────────────────────────────────────────────────────────
+PART 5 — Walk-Forward Validation Integration (optimize.py)
+──────────────────────────────────────────────────────────────────────────────
+
+Extend validation runs:
+
+When --validate-best is enabled:
+- Run stress tests with recycling_stress_mode = BOTH
+- Compare:
+   * Recycling OFF
+   * Recycling ON (PARTIAL)
+- Include stress metrics in:
+   outputs/validation_summary.json
+
+Reject configs where:
+- false_recycle_rate > 40%
+- avg_swap_edge_r < 0
+
+──────────────────────────────────────────────────────────────────────────────
+PART 6 — Reporting & Diagnostics
+──────────────────────────────────────────────────────────────────────────────
+
+Add new outputs:
+- outputs/recycling_effectiveness_report.csv
+- outputs/recycling_comparison_summary.csv
+
+Add console summary after backtest:
+- Recycling events triggered
+- Avg swap edge (R)
+- Capital reuse efficiency
+- False recycle rate
+
+──────────────────────────────────────────────────────────────────────────────
+PART 7 — CLI Flags
+──────────────────────────────────────────────────────────────────────────────
+
+Add flags to main.py:
+
+--recycling-stress-mode NONE|LOW_BUDGET|HIGH_SIGNAL_DENSITY|BOTH
+--recycling-stress-daily-budget-mult 0.50
+--recycling-stress-disable-topk true/false
+--recycling-stress-start-date YYYY-MM-DD
+--recycling-stress-end-date YYYY-MM-DD
+--run-recycling-comparison true/false
+
+Ensure:
+- Flags override config file
+- Stress flags are excluded from strategy_best_config.json
+
+──────────────────────────────────────────────────────────────────────────────
+PART 8 — Documentation (replit.md)
+──────────────────────────────────────────────────────────────────────────────
+
+Add section:
+“Capital Recycling Stress Tests & Validation”
+
+Explain:
+- Why stress testing is needed
+- How LOW_BUDGET and HIGH_SIGNAL_DENSITY work
+- How to interpret swap edge and false recycle rate
+- Recommended production settings
+
+Example:
+python main.py --config outputs/strategy_best_config.json \
+  --use-portfolio-allocator true \
+  --use-capital-recycling true \
+  --recycling-stress-mode BOTH \
+  --run-recycling-comparison
+
+──────────────────────────────────────────────────────────────────────────────
+ACCEPTANCE CRITERIA
+──────────────────────────────────────────────────────────────────────────────
+
+1) Stress modes activate deterministically and reproducibly
+2) Recycling events are triggered under stress
+3) recycling_effectiveness_report.csv generated and populated
+4) Comparative runs complete without errors
+5) Validation identifies whether recycling improves capital efficiency
+6) No lookahead violations introduced
+
+──────────────────────────────────────────────────────────────────────────────
+SANITY TESTS
+──────────────────────────────────────────────────────────────────────────────
+
+Demo stress:
+python main.py --universe demo --max-stocks 20 --backtest-v2 \
+  --use-portfolio-allocator true \
+  --use-capital-recycling true \
+  --recycling-stress-mode BOTH
+
+Comparison:
+python main.py --universe demo --max-stocks 20 --backtest-v2 \
+  --run-recycling-comparison true
+
+Optimization validation:
+python optimize.py --universe nasdaq --max-stocks 80 --validate-best
+
+──────────────────────────────────────────────────────────────────────────────
+END TASK 22
