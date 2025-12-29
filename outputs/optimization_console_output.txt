@@ -1,0 +1,388 @@
+Downloading NASDAQ symbol list...
+Download validation failed: Content appears to be HTML, not CSV
+Download returned insufficient symbols (0), using fallback
+
+============================================================
+WALK-FORWARD OPTIMIZATION
+============================================================
+Symbols: AAL, AAPL, ABNB, ACAD, ACIA, ACLS, ADBE, ADI, AGTC, ALLK, ALTR, AMBA, AMD, AMED, AMGN, AMWL, AMZN, AN, ANNX, AOSL, APP, APPF, AR, ARCO, ARQT, ARRY, ARVL, ASML, ATAI, ATXS, AURA, AXNX, AZN, BCRX, BFAM, BIO, BJRI, BMRN, BOX, BP, BROS, BSY, BTAI, CAMT, CARG, CASY, CBRL, CDNS, CDXS, CEG, CERE, CERT, CFLT, CGNX, CHK, CHUY, CHWY, CLFD, CLSK, CLX, CMPS, COST, COUP, COUR, CPRT, CQP, CRBU, CRSP, CTAS, CTRA, CTSH, DAL, DASH, DIN, DNUT, DOCS, DQ, DRCT, DT, DVN, EA, EAT, EDIT, ENPH, EOG, EPAM, EQNR, EXAS, EXPI, FICO, FMC, FOLD, FORM, FREY, FSLR, FTRE, FWRG, GALT, GDRX, GENI, GH, GNRC, GOOG, GOOGL, GSIT, GWRE, HA, HAL, HALO, HCAT, HIMS, HIMX, HON, HOOD, HPE, HQY, HSTM, HUN, HUT, ICHR, ICPT, INCY, INFN, INTC, IONS, IRTC, ISEE, JBHT, JBL, KEY, KHC, KIM, KLAC, KPTI, KRTX, KURA, LEN, LITE, LMND, LOCO, LRCX, LUV, LVS, MAR, MARA, MCHP, MDB, MEDP, MELI, MKSI, MNST, MODN, MRNA, MRO, MRVL, MSTR, MTDR, MTSI, MVST, NET, NEWR, NEXT, NLOK, NOVA, NRG, NTCT, NTLA, NTRA, ODFL, OFIX, OGN, OLED, OLLI, OLO, OMCL, ONEM, ONON, ONTO, ORLY, OXY, PAAS, PAG, PANW, PAYC, PBF, PCAR, PCTY, PCVX, PD, PDCE, PDCO, PDFS, PETQ, PHG, PHYS, PLAY, PLUG, PODD, PRFT, PSNY, PSTG, PSX, PUBM, PURE, PYPL, QCOM, QGEN, QLYS, QS, RARE, RE, REG, RIVN, RLAY, ROOT, ROST, RPD, RVBD, RVLV, SAVA, SBOW, SCPH, SDGR, SEE, SEM, SGEN, SHAK, SHC, SHEL, SIRI, SITM, SLGC, SMTC, SNPS, SNY, SOS, SPLK, SQ, SRAD, SRPT, SRRK, STEM, STRO, STZ, SUMO, SUN, SWKS, SWN, SWTX, TECH, TECK, TELL, TENB, TER, TME, TMUS, TNDM, TOL, TOST, TROW, TRV, TSLA, TSN, TWLO, TWST, TXN, UAL, UCTT, UDR, ULCC, VCEL, VCYT, VEEV, VERV, VFS, VKTX, VLO, VRNS, VRTX, VSH, VTLE, WBA, WBD, WCN, WDAY, WERN, WMB, WOOF, WSM, XEC, XFOR, XOM, XPEV, XRAY, YETI, YEXT, YMAB, ZION, ZM, ZS
+Train/Test/Step: 504/126/126 bars
+Objective: composite
+Max DD Train/Test: 18%/12%
+============================================================
+
+Step 1: Downloading price data (batch mode)...
+Price cache: 309 files, 25.7 MB
+
+Preloading price data for 302 symbols...
+Date range: 2017-12-31 to 2025-12-29
+Cache dir: data/price_cache
+Cache hits: 192, need download: 110
+Downloading batches:   0%|          | 0/3 [00:00<?, ?it/s]$FREY: possibly delisted; no timezone found
+$ISEE: possibly delisted; no timezone found
+$ARVL: possibly delisted; no timezone found
+$ICPT: possibly delisted; no timezone found
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: AMED"}}}
+$CHUY: possibly delisted; no timezone found
+$ALLK: possibly delisted; no timezone found
+$AMED: possibly delisted; no timezone found
+$AGTC: possibly delisted; no timezone found
+$AXNX: possibly delisted; no timezone found
+$COUP: possibly delisted; no timezone found
+$CHK: possibly delisted; no timezone found
+$INFN: possibly delisted; no timezone found
+$CERE: possibly delisted; no timezone found
+$ALTR: possibly delisted; no timezone found
+$HA: possibly delisted; no timezone found
+$KRTX: possibly delisted; no timezone found
+$ACIA: possibly delisted; no timezone found
+
+17 Failed downloads:
+['FREY', 'ISEE', 'ARVL', 'ICPT', 'CHUY', 'ALLK', 'AMED', 'AGTC', 'AXNX', 'COUP', 'CHK', 'INFN', 'CERE', 'ALTR', 'HA', 'KRTX', 'ACIA']: possibly delisted; no timezone found
+Downloading batches:  33%|███▎      | 1/3 [00:04<00:08,  4.39s/it]$RVBD: possibly delisted; no price data found  (1d 2017-12-31 02:38:12.983794 -> 2025-12-29 02:38:12.983794)
+$NEWR: possibly delisted; no timezone found
+$MRO: possibly delisted; no timezone found
+$SQ: possibly delisted; no timezone found
+$TELL: possibly delisted; no timezone found
+$SWTX: possibly delisted; no timezone found
+$SWN: possibly delisted; no timezone found
+$PRFT: possibly delisted; no timezone found
+$SGEN: possibly delisted; no timezone found
+$PDCE: possibly delisted; no timezone found
+$PETQ: possibly delisted; no timezone found
+$SCPH: possibly delisted; no timezone found
+$OLO: possibly delisted; no timezone found
+$SUMO: possibly delisted; no timezone found
+$ONEM: possibly delisted; no timezone found
+$NOVA: possibly delisted; no timezone found
+$SBOW: possibly delisted; no timezone found
+$SPLK: possibly delisted; no timezone found
+$PDCO: possibly delisted; no timezone found
+$NLOK: possibly delisted; no timezone found
+$RE: possibly delisted; no timezone found
+$SLGC: possibly delisted; no timezone found
+$MODN: possibly delisted; no timezone found
+
+23 Failed downloads:
+['RVBD']: possibly delisted; no price data found  (1d 2017-12-31 02:38:12.983794 -> 2025-12-29 02:38:12.983794)
+['NEWR', 'MRO', 'SQ', 'TELL', 'SWTX', 'SWN', 'PRFT', 'SGEN', 'PDCE', 'PETQ', 'SCPH', 'OLO', 'SUMO', 'ONEM', 'NOVA', 'SBOW', 'SPLK', 'PDCO', 'NLOK', 'RE', 'SLGC', 'MODN']: possibly delisted; no timezone found
+Downloading batches:  67%|██████▋   | 2/3 [00:07<00:03,  3.76s/it]$VERV: possibly delisted; no timezone found
+$XEC: possibly delisted; no timezone found
+$WBA: possibly delisted; no timezone found
+$YMAB: possibly delisted; no timezone found
+
+4 Failed downloads:
+['VERV', 'XEC', 'WBA', 'YMAB']: possibly delisted; no timezone found
+Downloading batches: 100%|██████████| 3/3 [00:08<00:00,  2.32s/it]Downloading batches: 100%|██████████| 3/3 [00:08<00:00,  2.77s/it]
+Total symbols loaded: 258
+Universe: 300 | Data OK: 256 | Liquidity pass: 198
+Added regime symbol QQQ for regime filter
+Added regime symbol SPY for regime filter
+
+Step 2: Building walk-forward windows...
+Created 1 windows
+
+Step 3: Building parameter grid...
+Grid size: 100 combinations
+
+Step 4: Running walk-forward optimization...
+
+Window 1/1: Train 2023-06-16 to 2025-06-20, Test 2025-06-23 to 2025-12-18
+  Grid search:   0%|          | 0/100 [00:00<?, ?it/s]
+  SKIP REASONS:
+    - Cluster cap: 141
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x0.85): 2
+    - CONFIRMED in high vol (x0.80): 1
+  Grid search:   1%|          | 1/100 [00:07<13:08,  7.96s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 2
+    - Cluster cap: 136
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x1.00): 4
+    - FORMING in high vol (x0.70): 2
+    - CONFIRMED in high vol (x0.90): 3
+  Grid search:   2%|▏         | 2/100 [00:16<13:56,  8.54s/it]
+  SKIP REASONS:
+    - Correlation cap: 2
+    - Cluster cap: 134
+    - Regime hard skip (FORMING): 3
+  Grid search:   3%|▎         | 3/100 [00:26<14:26,  8.94s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 1
+    - Cluster cap: 140
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x0.80): 2
+    - FORMING in high vol (x1.00): 1
+    - CONFIRMED in high vol (x0.90): 4
+  Grid search:   4%|▍         | 4/100 [00:34<13:50,  8.65s/it]
+  SKIP REASONS:
+    - Cluster cap: 82
+    - Regime hard skip (FORMING): 1
+  Grid search:   5%|▌         | 5/100 [00:45<14:58,  9.46s/it]
+  SKIP REASONS:
+    - Cluster cap: 87
+
+  REGIME RISK REDUCTIONS:
+    - CONFIRMED in high vol (x0.80): 3
+  Grid search:   6%|▌         | 6/100 [00:56<15:36,  9.97s/it]
+  SKIP REASONS:
+    - Correlation cap: 1
+    - Cluster cap: 154
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in high vol (x1.00): 1
+    - CONFIRMED in high vol (x0.80): 3
+  Grid search:   7%|▋         | 7/100 [01:05<15:08,  9.77s/it]
+  SKIP REASONS:
+    - Cluster cap: 68
+
+  REGIME RISK REDUCTIONS:
+    - CONFIRMED in high vol (x0.80): 3
+  Grid search:   8%|▊         | 8/100 [01:14<14:20,  9.36s/it]
+  SKIP REASONS:
+    - Cluster cap: 152
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in high vol (x0.85): 1
+    - CONFIRMED in high vol (x0.90): 3
+  Grid search:   9%|▉         | 9/100 [01:22<13:33,  8.94s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 2
+    - Cluster cap: 133
+  Grid search:  10%|█         | 10/100 [01:30<12:54,  8.60s/it]
+  SKIP REASONS:
+    - Correlation cap: 1
+    - Cluster cap: 31
+
+  REGIME RISK REDUCTIONS:
+    - CONFIRMED in high vol (x1.00): 2
+  Grid search:  11%|█         | 11/100 [01:39<13:15,  8.93s/it]
+  SKIP REASONS:
+    - Correlation cap: 1
+    - Cluster cap: 17
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x0.80): 1
+    - CONFIRMED in high vol (x0.90): 4
+  Grid search:  12%|█▏        | 12/100 [01:48<12:51,  8.77s/it]
+  SKIP REASONS:
+    - Cluster cap: 27
+  Grid search:  13%|█▎        | 13/100 [01:56<12:32,  8.65s/it]
+  SKIP REASONS:
+    - Cluster cap: 55
+  Grid search:  14%|█▍        | 14/100 [02:05<12:40,  8.85s/it]
+  SKIP REASONS:
+    - Cluster cap: 176
+  Grid search:  15%|█▌        | 15/100 [02:16<13:14,  9.35s/it]
+  SKIP REASONS:
+    - Cluster cap: 149
+  Grid search:  16%|█▌        | 16/100 [02:25<13:03,  9.32s/it]
+  SKIP REASONS:
+    - Cluster cap: 149
+  Grid search:  17%|█▋        | 17/100 [02:38<14:24, 10.42s/it]
+  SKIP REASONS:
+    - Cluster cap: 132
+  Grid search:  18%|█▊        | 18/100 [02:48<13:58, 10.23s/it]
+  SKIP REASONS:
+    - Cluster cap: 167
+  Grid search:  19%|█▉        | 19/100 [02:57<13:31, 10.02s/it]
+  SKIP REASONS:
+    - Cluster cap: 139
+  Grid search:  20%|██        | 20/100 [03:06<12:46,  9.58s/it]
+  SKIP REASONS:
+    - Cluster cap: 9
+
+  REGIME RISK REDUCTIONS:
+    - CONFIRMED in high vol (x1.00): 2
+  Grid search:  21%|██        | 21/100 [03:16<12:50,  9.76s/it]
+  SKIP REASONS:
+    - Cluster cap: 19
+  Grid search:  22%|██▏       | 22/100 [03:25<12:27,  9.58s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 3
+    - Cluster cap: 149
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x1.00): 4
+    - FORMING in high vol (x1.00): 3
+    - CONFIRMED in high vol (x0.80): 5
+  Grid search:  23%|██▎       | 23/100 [03:33<11:39,  9.09s/it]
+  SKIP REASONS:
+    - Correlation cap: 1
+    - Cluster cap: 29
+  Grid search:  24%|██▍       | 24/100 [03:43<11:52,  9.38s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 1
+    - Cluster cap: 25
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x1.00): 1
+    - FORMING in high vol (x0.70): 2
+    - CONFIRMED in high vol (x0.90): 3
+  Grid search:  25%|██▌       | 25/100 [03:51<11:11,  8.95s/it]
+  SKIP REASONS:
+    - Cluster cap: 108
+    - Regime hard skip (FORMING): 2
+  Grid search:  26%|██▌       | 26/100 [04:00<11:05,  8.99s/it]
+  SKIP REASONS:
+    - Cluster cap: 3
+    - Regime hard skip (FORMING): 1
+  Grid search:  27%|██▋       | 27/100 [04:09<10:58,  9.02s/it]  Grid search:  28%|██▊       | 28/100 [04:18<10:30,  8.76s/it]
+  SKIP REASONS:
+    - Cluster cap: 132
+    - Regime hard skip (FORMING): 6
+  Grid search:  29%|██▉       | 29/100 [04:26<10:17,  8.70s/it]
+  SKIP REASONS:
+    - Correlation cap: 1
+    - Cluster cap: 149
+    - Regime hard skip (FORMING): 3
+  Grid search:  30%|███       | 30/100 [04:37<10:46,  9.24s/it]
+  SKIP REASONS:
+    - Cluster cap: 57
+    - Regime hard skip (FORMING): 1
+  Grid search:  31%|███       | 31/100 [04:47<10:56,  9.52s/it]  Grid search:  32%|███▏      | 32/100 [04:57<10:51,  9.58s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 4
+    - Correlation cap: 1
+    - Cluster cap: 60
+  Grid search:  33%|███▎      | 33/100 [05:04<10:07,  9.06s/it]
+  SKIP REASONS:
+    - Correlation cap: 1
+    - Cluster cap: 22
+  Grid search:  34%|███▍      | 34/100 [05:13<09:47,  8.91s/it]
+  SKIP REASONS:
+    - Cluster cap: 22
+    - Regime hard skip (FORMING): 1
+  Grid search:  35%|███▌      | 35/100 [05:20<09:12,  8.51s/it]
+  SKIP REASONS:
+    - Cluster cap: 3
+  Grid search:  36%|███▌      | 36/100 [05:29<09:10,  8.60s/it]
+  SKIP REASONS:
+    - Cluster cap: 77
+  Grid search:  37%|███▋      | 37/100 [05:39<09:16,  8.83s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 1
+    - Cluster cap: 139
+    - Regime hard skip (FORMING): 4
+  Grid search:  38%|███▊      | 38/100 [05:48<09:25,  9.12s/it]  Grid search:  39%|███▉      | 39/100 [05:58<09:31,  9.36s/it]
+  SKIP REASONS:
+    - Cluster cap: 135
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x0.80): 2
+    - FORMING in high vol (x1.00): 1
+    - CONFIRMED in high vol (x0.80): 2
+  Grid search:  40%|████      | 40/100 [06:08<09:22,  9.37s/it]
+  SKIP REASONS:
+    - Cluster cap: 21
+  Grid search:  41%|████      | 41/100 [06:16<08:56,  9.09s/it]
+  SKIP REASONS:
+    - Cluster cap: 21
+    - Regime hard skip (FORMING): 1
+  Grid search:  42%|████▏     | 42/100 [06:24<08:28,  8.76s/it]
+  SKIP REASONS:
+    - Cluster cap: 68
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x1.00): 1
+    - FORMING in high vol (x0.85): 1
+    - CONFIRMED in high vol (x0.80): 3
+  Grid search:  43%|████▎     | 43/100 [06:33<08:16,  8.71s/it]
+  SKIP REASONS:
+    - Cluster cap: 89
+    - Regime hard skip (FORMING): 4
+  Grid search:  44%|████▍     | 44/100 [06:41<07:54,  8.47s/it]
+  SKIP REASONS:
+    - Cluster cap: 8
+
+  REGIME RISK REDUCTIONS:
+    - CONFIRMED in high vol (x1.00): 2
+  Grid search:  45%|████▌     | 45/100 [06:51<08:16,  9.03s/it]
+  SKIP REASONS:
+    - Cluster cap: 1
+  Grid search:  46%|████▌     | 46/100 [06:59<07:57,  8.85s/it]
+  SKIP REASONS:
+    - Cluster cap: 139
+    - Regime hard skip (FORMING): 3
+  Grid search:  47%|████▋     | 47/100 [07:07<07:26,  8.43s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 1
+    - Cluster cap: 70
+  Grid search:  48%|████▊     | 48/100 [07:16<07:21,  8.48s/it]
+  SKIP REASONS:
+    - Cluster cap: 9
+  Grid search:  49%|████▉     | 49/100 [07:25<07:30,  8.84s/it]
+  SKIP REASONS:
+    - Cluster cap: 149
+  Grid search:  50%|█████     | 50/100 [07:36<07:47,  9.35s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 3
+    - Cluster cap: 151
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x1.00): 4
+    - CONFIRMED in high vol (x0.90): 2
+  Grid search:  51%|█████     | 51/100 [07:44<07:24,  9.08s/it]
+  SKIP REASONS:
+    - Cluster cap: 139
+  Grid search:  52%|█████▏    | 52/100 [07:53<07:16,  9.09s/it]
+  SKIP REASONS:
+    - Correlation cap: 1
+    - Cluster cap: 148
+    - Regime hard skip (FORMING): 2
+  Grid search:  53%|█████▎    | 53/100 [08:03<07:13,  9.21s/it]
+  SKIP REASONS:
+    - Cluster cap: 174
+  Grid search:  54%|█████▍    | 54/100 [08:13<07:13,  9.43s/it]
+  SKIP REASONS:
+    - Cluster cap: 69
+  Grid search:  55%|█████▌    | 55/100 [08:21<06:49,  9.11s/it]
+  SKIP REASONS:
+    - Cluster cap: 19
+  Grid search:  56%|█████▌    | 56/100 [08:31<06:45,  9.21s/it]
+  SKIP REASONS:
+    - Cluster cap: 101
+
+  REGIME RISK REDUCTIONS:
+    - CONFIRMED in high vol (x0.80): 2
+  Grid search:  57%|█████▋    | 57/100 [08:40<06:43,  9.39s/it]
+  SKIP REASONS:
+    - Cluster cap: 25
+  Grid search:  58%|█████▊    | 58/100 [08:49<06:27,  9.23s/it]
+  SKIP REASONS:
+    - Cluster cap: 83
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x1.00): 1
+    - CONFIRMED in high vol (x1.00): 1
+  Grid search:  59%|█████▉    | 59/100 [08:58<06:17,  9.21s/it]
+  SKIP REASONS:
+    - Cluster cap: 2
+  Grid search:  60%|██████    | 60/100 [09:06<05:55,  8.88s/it]
+  SKIP REASONS:
+    - Correlation cap: 1
+    - Cluster cap: 5
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x0.85): 1
+    - FORMING in high vol (x0.85): 2
+    - CONFIRMED in high vol (x0.80): 2
+  Grid search:  61%|██████    | 61/100 [09:16<05:55,  9.12s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 1
+    - Cluster cap: 142
+
+  REGIME RISK REDUCTIONS:
+    - FORMING in downtrend (x0.85): 3
+    - FORMING in high vol (x1.00): 1
+    - CONFIRMED in high vol (x1.00): 2
+  Grid search:  62%|██████▏   | 62/100 [09:25<05:38,  8.92s/it]
+  SKIP REASONS:
+    - Max FORMING positions: 1
+    - Correlation cap: 1
+    - Cluster cap: 45
+  Grid search:  63%|██████▎   | 63/100 [09:33<05:19,  8.63s/it]

@@ -121,16 +121,13 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
     """
     Build parameter grid for optimization including portfolio/exit knobs and regime.
     
-    Includes:
-    - Detection params (reduced to avoid explosion)
-    - Portfolio/risk rules (Task 7)
-    - Exit management rules (Task 8)
-    - Regime parameters (Task 12)
+    Uses random sampling to avoid combinatorial explosion.
     
     Returns:
-        List of parameter dictionaries (randomly sampled if exceeds limit)
+        List of parameter dictionaries (randomly sampled)
     """
     import random
+    random.seed(seed)
     
     detection_params = {
         'low_tolerance': [0.04, 0.05],
@@ -168,31 +165,6 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
         'trend_score_mode': ['NEUTRAL', 'BELOW_MA200', 'ABOVE_MA200'],
     }
     
-    all_params = {}
-    all_params.update(detection_params)
-    all_params.update(portfolio_params)
-    all_params.update(forming_exit_params)
-    all_params.update(confirmed_exit_params)
-    all_params.update(scoring_params)
-    
-    keys = list(all_params.keys())
-    values = [all_params[k] for k in keys]
-    
-    all_combos = list(product(*values))
-    total_combos = len(all_combos)
-    
-    if total_combos > grid_size_limit:
-        random.seed(seed)
-        all_combos = random.sample(all_combos, grid_size_limit)
-    
-    grid = []
-    for combo in all_combos:
-        params = dict(zip(keys, combo))
-        params['max_sep'] = 260
-        params['forming_no_progress_action'] = 'EXIT'
-        grid.append(params)
-    
-    grid_with_regime = []
     regime_modes = ['OFF', 'HARD_SKIP', 'SOFT_GATE']
     
     regime_params_when_on = {
@@ -208,40 +180,41 @@ def build_param_grid(grid_size_limit: int = 250, seed: int = 42) -> List[Dict[st
         'regime_highvol_confirmed_mult': [0.80, 0.90, 1.00],
     }
     
-    regime_on_keys = list(regime_params_when_on.keys())
-    regime_on_values = [regime_params_when_on[k] for k in regime_on_keys]
-    regime_on_combos = list(product(*regime_on_values))
+    all_base_params = {}
+    all_base_params.update(detection_params)
+    all_base_params.update(portfolio_params)
+    all_base_params.update(forming_exit_params)
+    all_base_params.update(confirmed_exit_params)
+    all_base_params.update(scoring_params)
     
-    soft_gate_keys = list(soft_gate_multipliers.keys())
-    soft_gate_values = [soft_gate_multipliers[k] for k in soft_gate_keys]
-    soft_gate_combos = list(product(*soft_gate_values))
+    grid = []
+    for _ in range(grid_size_limit * 2):
+        params = {}
+        for key, values_list in all_base_params.items():
+            params[key] = random.choice(values_list)
+        
+        params['max_sep'] = 260
+        params['forming_no_progress_action'] = 'EXIT'
+        
+        regime_mode = random.choice(regime_modes)
+        params['regime_mode'] = regime_mode
+        
+        if regime_mode in ['HARD_SKIP', 'SOFT_GATE']:
+            for key, values_list in regime_params_when_on.items():
+                params[key] = random.choice(values_list)
+        
+        if regime_mode == 'SOFT_GATE':
+            for key, values_list in soft_gate_multipliers.items():
+                params[key] = random.choice(values_list)
+        
+        param_tuple = tuple(sorted(params.items()))
+        if param_tuple not in [tuple(sorted(p.items())) for p in grid]:
+            grid.append(params)
+        
+        if len(grid) >= grid_size_limit:
+            break
     
-    for base_params in grid:
-        for mode in regime_modes:
-            if mode == 'OFF':
-                new_params = base_params.copy()
-                new_params['regime_mode'] = 'OFF'
-                grid_with_regime.append(new_params)
-            elif mode == 'HARD_SKIP':
-                for regime_combo in regime_on_combos:
-                    new_params = base_params.copy()
-                    new_params['regime_mode'] = 'HARD_SKIP'
-                    new_params.update(dict(zip(regime_on_keys, regime_combo)))
-                    grid_with_regime.append(new_params)
-            else:
-                for regime_combo in regime_on_combos:
-                    for soft_combo in soft_gate_combos:
-                        new_params = base_params.copy()
-                        new_params['regime_mode'] = 'SOFT_GATE'
-                        new_params.update(dict(zip(regime_on_keys, regime_combo)))
-                        new_params.update(dict(zip(soft_gate_keys, soft_combo)))
-                        grid_with_regime.append(new_params)
-    
-    if len(grid_with_regime) > grid_size_limit:
-        random.seed(seed)
-        grid_with_regime = random.sample(grid_with_regime, grid_size_limit)
-    
-    return grid_with_regime
+    return grid[:grid_size_limit]
 
 
 def params_to_config(params: Dict[str, Any], base_config: Dict = None) -> Dict:
