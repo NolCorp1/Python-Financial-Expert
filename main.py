@@ -697,7 +697,65 @@ def main():
                        choices=['NEUTRAL', 'ABOVE_MA200', 'BELOW_MA200'],
                        help='Trend scoring mode: NEUTRAL removes trend influence (default)')
     
+    parser.add_argument('--paper-daily', action='store_true',
+                       help='Run paper trading for a single date (Task 28)')
+    parser.add_argument('--paper-date', type=str, default=None,
+                       help='Date for paper trading (YYYY-MM-DD), default: today NY time')
+    parser.add_argument('--paper-state-path', type=str, default='data/paper/portfolio_state.json',
+                       help='Path to paper portfolio state file')
+    parser.add_argument('--paper-output-dir', type=str, default=None,
+                       help='Paper trading output directory (default: outputs/paper/YYYYMMDD/)')
+    parser.add_argument('--paper-dry-run', action='store_true',
+                       help='Paper trading dry run (no state changes)')
+    parser.add_argument('--paper-force', action='store_true',
+                       help='Force paper trading re-run for same date')
+    parser.add_argument('--paper-fill-model', type=str, default='close',
+                       choices=['close', 'next_open'],
+                       help='Paper trading fill price model')
+    
     args = parser.parse_args()
+    
+    if args.paper_daily:
+        from scripts.run_paper_daily import main as paper_main
+        import sys as _sys
+        paper_args = [
+            '--universe', args.universe,
+            '--max-stocks', str(args.max_stocks),
+            '--price-cache-policy', args.price_cache_policy,
+            '--price-cache-dir', args.price_cache_dir,
+            '--paper-state-path', args.paper_state_path,
+            '--max-positions-total', str(args.max_positions_total),
+            '--max-positions-forming', str(args.max_positions_forming),
+            '--daily-risk-budget', str(args.daily_risk_budget),
+            '--daily-risk-budget-forming', str(args.daily_risk_budget_forming),
+            '--risk-fraction-forming', str(args.risk_forming),
+            '--risk-fraction-confirmed', str(args.risk_confirmed),
+            '--use-capital-recycling', args.use_capital_recycling,
+            '--recycle-trigger-mode', args.recycle_trigger_mode,
+            '--recycle-min-hold-days', str(args.recycle_min_hold_days),
+            '--recycle-min-score-gap', str(args.recycle_min_score_gap),
+            '--recycle-min-expected-edge-r', str(args.recycle_min_expected_edge_r),
+            '--recycle-exclude-confirmed-winners', args.recycle_exclude_confirmed_winners,
+            '--recycle-replace-only-if-improves-score', args.recycle_replace_only_if_improves_score,
+            '--fill-model', args.paper_fill_model,
+        ]
+        if args.paper_date:
+            paper_args.extend(['--date', args.paper_date])
+        if args.paper_output_dir:
+            paper_args.extend(['--output-dir', args.paper_output_dir])
+        if args.symbols_seed is not None:
+            paper_args.extend(['--symbols-seed', str(args.symbols_seed)])
+        if args.paper_dry_run:
+            paper_args.append('--dry-run')
+        if args.paper_force:
+            paper_args.append('--force')
+        if args.quiet:
+            paper_args.append('--quiet')
+        if args.disable_liquidity_filter:
+            paper_args.append('--disable-liquidity-filter')
+        
+        _sys.argv = ['run_paper_daily'] + paper_args
+        return paper_main()
     
     loaded_config = None
     if args.config:

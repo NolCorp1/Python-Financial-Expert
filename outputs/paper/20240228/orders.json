@@ -1,0 +1,17 @@
+[
+  {
+    "date": "2024-02-28",
+    "symbol": "MU",
+    "side": "BUY",
+    "qty": 82,
+    "order_type": "MARKET",
+    "limit_price": null,
+    "reason": "PATTERN_SIGNAL",
+    "stage": "CONFIRMED",
+    "score": 57.16,
+    "risk_budget": 1000.0,
+    "stop_price": 77.57,
+    "take_profit": 100.22,
+    "metadata_json": "{\"pattern_id\": \"MU_20240220_CONFIRMED\", \"entry_date\": \"2024-02-28 00:00:00\", \"allocation_score\": 0.6287600000000001, \"allocation_rank\": 1, \"allocation_scale\": 1.0}"
+  }
+]

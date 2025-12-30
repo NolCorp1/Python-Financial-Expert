@@ -1,0 +1,2 @@
+date,symbol,side,qty,order_type,limit_price,reason,stage,score,risk_budget,stop_price,take_profit,metadata_json
+2024-02-28,MU,BUY,82,MARKET,,PATTERN_SIGNAL,CONFIRMED,57.16,1000.0,77.57,100.22,"{""pattern_id"": ""MU_20240220_CONFIRMED"", ""entry_date"": ""2024-02-28 00:00:00"", ""allocation_score"": 0.6287600000000001, ""allocation_rank"": 1, ""allocation_scale"": 1.0}"

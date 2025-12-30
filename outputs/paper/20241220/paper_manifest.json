@@ -1,0 +1,29 @@
+{
+  "run_id": "paper_2024-12-20_211416",
+  "date": "2024-12-20",
+  "git_commit": "33d1a930",
+  "generated_at": "2025-12-30T21:14:16.222393",
+  "cli_args": {
+    "universe": "demo",
+    "max_stocks": 20,
+    "symbols_seed": 123,
+    "price_cache_policy": "READONLY",
+    "use_capital_recycling": true,
+    "recycle_trigger_mode": "BUDGET_BLOCKED",
+    "max_positions_total": 10,
+    "max_positions_forming": 3,
+    "daily_risk_budget": 0.04
+  },
+  "recycling_settings": {
+    "enabled": true,
+    "trigger_mode": "BUDGET_BLOCKED",
+    "min_hold_days": 3,
+    "min_score_gap": 0.0,
+    "min_expected_edge_r": 0.15
+  },
+  "hashes": {
+    "orders_csv": "75222685ea8de52c",
+    "report_md": "3f56c594c55759b1",
+    "paper_manifest": "edcdae65123630e1"
+  }
+}

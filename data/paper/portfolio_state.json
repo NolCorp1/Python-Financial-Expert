@@ -1,0 +1,37 @@
+{
+  "as_of_date": "2024-02-28",
+  "cash": 92643.78007507324,
+  "equity": 100000.0,
+  "initial_capital": 100000.0,
+  "open_positions": [
+    {
+      "symbol": "MU",
+      "position_uid": "dc1b6939",
+      "qty": 82,
+      "entry_date": "2024-02-28",
+      "entry_price": 89.70999908447266,
+      "stop_price": 77.57,
+      "risk_budget_used": 0.01,
+      "stage": "CONFIRMED",
+      "current_price": 89.70999908447266,
+      "unrealized_pnl": 0.0,
+      "unrealized_r": 0.0,
+      "metadata": {
+        "pattern_id": "MU_20240220_CONFIRMED",
+        "pattern_score": 57.16
+      }
+    }
+  ],
+  "closed_positions": [],
+  "history": [
+    {
+      "date": "2024-02-28",
+      "equity": 100000.0,
+      "cash": 92643.78007507324,
+      "open_positions_count": 1,
+      "forming_count": 0,
+      "confirmed_count": 1,
+      "daily_pnl": 0.0
+    }
+  ]
+}
