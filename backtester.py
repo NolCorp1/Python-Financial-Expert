@@ -1028,6 +1028,7 @@ def run_backtest(
         # Build candidates for allocation
         candidates: List[AllocationCandidate] = []
         symbols_in_candidates: set = set()
+        constraint_blocked_signals: List[tuple] = []  # (signal, block_reason, entry_fill, stop_dist) for recycling
         
         for signal in todays_signals:
             sym = signal.symbol
@@ -1043,7 +1044,7 @@ def run_backtest(
             if open_price < cfg.min_price:
                 continue
             
-            # Symbol already open check
+            # Symbol already open check - this is not recyclable (can't replace symbol with itself)
             if cfg.one_position_per_symbol and sym in open_positions:
                 skipped_symbol_already_open += 1
                 continue
@@ -1051,6 +1052,16 @@ def run_backtest(
             # For batched processing, also skip if we already have a candidate for this symbol
             if cfg.one_position_per_symbol and sym in symbols_in_candidates:
                 continue
+            
+            # Pre-compute entry and stop distance for potential candidates
+            entry_fill = open_price * (1 + cfg.slippage_bps / 10000)
+            stop_dist = entry_fill - signal.stop_loss
+            if stop_dist <= 0:
+                skipped_invalid_sizing += 1
+                continue
+            
+            # Track blocking reason for recycling consideration
+            block_reason = None
             
             # Position limits check (using current state)
             open_total = len(open_positions) + len(candidates)
@@ -1061,16 +1072,16 @@ def run_backtest(
             
             if open_total >= cfg.max_positions_total:
                 skipped_max_total += 1
-                continue
-            if signal.entry_kind == "FORMING" and open_forming >= cfg.max_positions_forming:
+                block_reason = 'max_positions_total'
+            elif signal.entry_kind == "FORMING" and open_forming >= cfg.max_positions_forming:
                 skipped_max_forming += 1
-                continue
-            if signal.entry_kind == "CONFIRMED" and open_confirmed >= cfg.max_positions_confirmed:
+                block_reason = 'max_positions_forming'
+            elif signal.entry_kind == "CONFIRMED" and open_confirmed >= cfg.max_positions_confirmed:
                 skipped_max_confirmed += 1
-                continue
+                block_reason = 'max_positions_confirmed'
             
-            # Correlation caps
-            if cfg.use_correlation_caps and len(open_positions) > 0 and sym in corr_matrix.columns:
+            # Correlation caps (only if not already blocked)
+            if block_reason is None and cfg.use_correlation_caps and len(open_positions) > 0 and sym in corr_matrix.columns:
                 max_corr_found = 0.0
                 for open_sym in open_positions.keys():
                     if open_sym in corr_matrix.columns:
@@ -1082,10 +1093,10 @@ def run_backtest(
                             pass
                 if max_corr_found >= cfg.max_corr_to_existing:
                     skipped_corr_cap += 1
-                    continue
+                    block_reason = 'corr_cap'
             
-            # Cluster caps
-            if cfg.use_cluster_caps and sym in clusters:
+            # Cluster caps (only if not already blocked)
+            if block_reason is None and cfg.use_cluster_caps and sym in clusters:
                 sym_cluster = clusters[sym]
                 cluster_count = sum(
                     1 for p in open_positions.values() 
@@ -1093,7 +1104,12 @@ def run_backtest(
                 )
                 if cluster_count >= cfg.max_positions_per_cluster:
                     skipped_cluster_cap += 1
-                    continue
+                    block_reason = 'cluster_cap'
+            
+            # If blocked by a constraint, save for potential recycling (ALWAYS mode)
+            if block_reason is not None:
+                constraint_blocked_signals.append((signal, block_reason, entry_fill, stop_dist))
+                continue
             
             # Regime filter
             regime_risk_mult = 1.0
@@ -1121,12 +1137,7 @@ def run_backtest(
                 if current_date in exited_today and sym in exited_today[current_date]:
                     continue
             
-            # Compute entry and stop distance
-            entry_fill = open_price * (1 + cfg.slippage_bps / 10000)
-            stop_dist = entry_fill - signal.stop_loss
-            if stop_dist <= 0:
-                skipped_invalid_sizing += 1
-                continue
+            # entry_fill and stop_dist already computed above
             
             # Compute risk fraction
             if signal.entry_kind == "CONFIRMED":
@@ -1184,11 +1195,68 @@ def run_backtest(
             candidates = allocate_daily_signals(candidates, current_equity, cfg, weekly_risk_used)
         
         # Capital recycling: try to free budget for blocked candidates (Task 21)
-        if cfg.use_capital_recycling and cfg.use_portfolio_allocator and len(open_positions) > 0:
-            # Find blocked candidates (were in original list but not allocated)
-            allocated_ids = {(c.signal.symbol, c.signal.pattern_id) for c in candidates}
-            blocked = [c for c in all_original_candidates 
-                      if (c.signal.symbol, c.signal.pattern_id) not in allocated_ids]
+        if cfg.use_capital_recycling and len(open_positions) > 0:
+            # Find budget-blocked candidates (were in original list but not allocated by portfolio allocator)
+            budget_blocked = []
+            if cfg.use_portfolio_allocator:
+                allocated_ids = {(c.signal.symbol, c.signal.pattern_id) for c in candidates}
+                budget_blocked = [c for c in all_original_candidates 
+                                 if (c.signal.symbol, c.signal.pattern_id) not in allocated_ids]
+            
+            # In ALWAYS mode, also create candidates from constraint_blocked_signals (Part B fix)
+            constraint_blocked_candidates = []
+            if cfg.recycle_trigger_mode.upper() == "ALWAYS" and constraint_blocked_signals:
+                for signal, block_reason, entry_fill, stop_dist in constraint_blocked_signals:
+                    # Compute risk fraction for blocked signal
+                    if signal.entry_kind == "CONFIRMED":
+                        risk_fraction = cfg.risk_fraction_confirmed
+                    else:
+                        risk_fraction = cfg.risk_fraction_forming
+                    
+                    # Apply score-based scaling
+                    score_mult = 1.0
+                    if cfg.use_score_risk_scaling:
+                        apply_to = (cfg.score_risk_apply_to or "BOTH").upper()
+                        kind = signal.entry_kind.upper()
+                        should_apply = (
+                            apply_to == "BOTH"
+                            or (apply_to == "FORMING" and kind == "FORMING")
+                            or (apply_to == "CONFIRMED" and kind == "CONFIRMED")
+                        )
+                        if should_apply:
+                            pattern_score = signal.meta.get("pattern_score", None) if signal.meta else None
+                            score_mult = compute_score_risk_mult(
+                                pattern_score=pattern_score,
+                                alpha=cfg.score_risk_alpha,
+                                min_mult=cfg.score_risk_min_mult,
+                                max_mult=cfg.score_risk_max_mult,
+                                missing_policy=cfg.score_risk_missing_policy,
+                            )
+                            risk_fraction *= score_mult
+                    
+                    if cfg.max_risk_fraction_per_trade is not None:
+                        risk_fraction = min(risk_fraction, cfg.max_risk_fraction_per_trade)
+                    
+                    alloc_score = compute_signal_allocation_score(signal)
+                    
+                    cand = AllocationCandidate(
+                        signal=signal,
+                        entry_fill=entry_fill,
+                        stop_dist=stop_dist,
+                        risk_fraction=risk_fraction,
+                        allocation_score=alloc_score,
+                        regime_risk_mult=1.0,
+                        score_risk_mult=score_mult,
+                    )
+                    cand.block_reason = block_reason  # Track block reason
+                    constraint_blocked_candidates.append(cand)
+            
+            # Combine blocked lists based on trigger mode
+            if cfg.recycle_trigger_mode.upper() == "ALWAYS":
+                blocked = budget_blocked + constraint_blocked_candidates
+            else:
+                # BUDGET_BLOCKED mode: only process budget-blocked candidates
+                blocked = budget_blocked
             
             # Get today's open price for recycling (deterministic order)
             recycle_prices = {}
@@ -1200,15 +1268,6 @@ def run_backtest(
             blocked.sort(key=lambda c: (-c.allocation_score, c.signal.symbol, str(c.signal.pattern_id)))
             
             for blocked_cand in blocked:
-                # ALWAYS mode: process all blocked candidates
-                # BUDGET_BLOCKED mode: only process if candidate was specifically budget-blocked
-                # (Currently we don't track specific block reason per candidate, so ALWAYS processes all)
-                if cfg.recycle_trigger_mode.upper() == "BUDGET_BLOCKED":
-                    # In BUDGET_BLOCKED mode, only try recycling if we're truly out of budget
-                    # For now, process all blocked (conservative approach - any block triggers recycling attempt)
-                    pass  # Continue to try recycling
-                # ALWAYS mode processes all blocked candidates (no early break)
-                
                 new_score = blocked_cand.allocation_score
                 
                 # Find recyclable positions (worst first based on recycle score)

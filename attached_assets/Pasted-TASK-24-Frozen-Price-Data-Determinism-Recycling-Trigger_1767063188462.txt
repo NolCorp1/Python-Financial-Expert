@@ -1,0 +1,189 @@
+TASK 24 — Frozen Price Data Determinism + Recycling Trigger Fix + Comparison MaxDD Fix
+
+ROLE
+You are a senior quant trading systems engineer. This is a near-production, no-lookahead backtester with portfolio allocator + capital recycling. All prior tasks are complete. You must ONLY make changes that improve determinism, validation integrity, and capital efficiency instrumentation. Do not add new alpha signals.
+
+OBJECTIVES
+A) Make backtest outputs fully deterministic (trades.csv, equity.csv, metrics.json) for identical CLI inputs.
+B) Fix capital recycling so it can actually trigger under non-budget constraints (position caps / forming caps / cluster caps) when configured.
+C) Fix recycling comparison summary so MaxDD% is correct per variant (not zeroed) and variants don’t overwrite each other’s metrics.
+
+NON-NEGOTIABLES
+- No lookahead violations.
+- Reproducibility must improve, not regress.
+- Existing CLI flags remain backward-compatible.
+- Default behavior should remain reasonable for normal runs; determinism should be guaranteed when user asks for it.
+
+FILES LIKELY TO EDIT
+- price_cache.py (or wherever price caching/loading lives)
+- main.py (CLI argument parsing / wiring)
+- backtester.py (data loading entry point + recycling trigger/recording + comparison runner)
+- metrics.py (if needed for MaxDD extraction / formatting)
+- manifest.py (if needed to record cache policy + data provenance)
+
+===========================================================
+PART A — PRICE CACHE POLICY (FULL DETERMINISM INCLUDING equity.csv)
+===========================================================
+
+Problem:
+equity.csv varies across identical runs due to fresh API data changes / float differences. Rounding helps but cannot guarantee exact determinism when upstream data differs.
+
+Goal:
+Introduce a “frozen data” cache policy that guarantees the exact same OHLCV series is used for backtests when requested.
+
+1) Add CLI flag: --price-cache-policy {AUTO,READONLY,REFRESH,OFF}
+   Definitions:
+   - AUTO: if cache exists for symbol+range, use it; else fetch once and write to cache
+   - READONLY: ONLY read cache; if missing any required series -> raise a clear error and exit non-zero
+   - REFRESH: always refetch and overwrite cache (then use it)
+   - OFF: always fetch fresh without cache (current behavior)
+
+2) Wire the policy into price loading:
+   - Identify the single choke point where OHLCV is requested.
+   - Ensure that for backtesting runs (--backtest or --backtest-v2), the policy defaults to AUTO (or keep current default OFF if you must preserve existing behavior, but support READONLY/REFRESH determinism modes).
+   - Ensure the cache key includes: symbol, start/end, interval, auto_adjust flag if used, and any normalization settings.
+
+3) Normalize stored data deterministically:
+   - Store OHLC prices rounded to 2 decimals (or existing standard)
+   - Store volume as int
+   - Ensure index timezone / datetime normalization is consistent and stable.
+   - Ensure read->write->read round trips produce identical frames.
+
+4) Manifest integration:
+   - In the run manifest, record the policy and whether data was fetched or fully cache-hit.
+   - Add a small section like:
+     price_data: {policy: READONLY, cache_hits: N, cache_misses: 0, source: yfinance, normalized: true}
+
+ACCEPTANCE TESTS (PART A)
+A1) Prime cache (refresh):
+    python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet --price-cache-policy REFRESH
+A2) Determinism run 1 (readonly):
+    python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet --price-cache-policy READONLY
+    sha256sum outputs/trades.csv outputs/equity.csv outputs/metrics.json > /tmp/h1.txt
+A3) Determinism run 2 (readonly):
+    python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet --price-cache-policy READONLY
+    sha256sum outputs/trades.csv outputs/equity.csv outputs/metrics.json > /tmp/h2.txt
+    diff -u /tmp/h1.txt /tmp/h2.txt  (MUST be empty / no diff)
+
+A4) READONLY missing-cache behavior:
+    - Delete cache for one symbol (or temporarily point cache dir elsewhere) and confirm:
+      READONLY exits non-zero and prints a helpful message listing missing symbols/series.
+
+===========================================================
+PART B — RECYCLING MUST TRIGGER UNDER NON-BUDGET BLOCKS
+===========================================================
+
+Problem observed:
+Even with forced settings (trigger ALWAYS, min_score_gap=0, min_hold=0, etc.), recycle_events_count stays 0. This strongly suggests recycling only triggers for “budget blocked” and ignores other constraint rejections (max positions, forming cap, cluster cap).
+
+Goal:
+Recycling should be considered whenever a candidate is rejected for ANY allocation constraint, depending on trigger mode:
+- BUDGET_BLOCKED: only if blocked specifically by risk budget
+- ALWAYS: if blocked by ANY constraint AND there exists a superior candidate worth considering
+
+1) In allocator/entry logic, capture structured skip reasons:
+   - blocked_by_budget
+   - blocked_by_max_positions_total
+   - blocked_by_max_positions_forming
+   - blocked_by_cluster_cap
+   - blocked_by_corr_cap (if used)
+   - blocked_by_symbol_open
+   - etc.
+
+2) Define:
+   blocked_any = any(blocked_by_*) EXCLUDING "symbol already open" (and any other non-actionable reasons)
+   - (Keep symbol already open as a hard stop; recycling shouldn’t try to replace an existing symbol with itself.)
+
+3) Trigger logic:
+   - If recycle_trigger_mode == BUDGET_BLOCKED: only attempt recycle when blocked_by_budget == True
+   - If recycle_trigger_mode == ALWAYS: attempt recycle when blocked_any == True
+
+4) Ensure recycling events are recorded:
+   - Whenever recycling sells/partially sells/exits a position and replaces with a new one, append an event record.
+   - This record MUST include:
+     date, old_symbol, new_symbol, action (PARTIAL/EXIT), freed_risk, used_risk, old_score, new_score,
+     replacement_edge_r (if computed), old_future_r (if computed), and whether it was a “swap win”.
+   - Ensure these events propagate into metrics.json -> recycling_effectiveness swap_edges array.
+
+5) Make forced recycling possible for testing:
+   - With settings:
+     --recycle-trigger-mode ALWAYS
+     --recycle-min-score-gap 0
+     --recycle-min-hold-days 0
+     --recycle-no-progress-days 0
+     --recycle-no-progress-r 999
+     --recycle-exclude-confirmed-winners false
+     and tight caps, recycling_events_count MUST be > 0 (unless truly no candidates exist; if so, print why).
+
+ACCEPTANCE TESTS (PART B)
+B1) Prime cache first (to avoid data nondeterminism):
+    python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet --price-cache-policy REFRESH
+
+B2) Run a constrained scenario designed to force competition:
+    python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet \
+      --price-cache-policy READONLY \
+      --daily-risk-budget 0.01 --daily-risk-budget-forming 0.003 \
+      --max-positions-total 4 --max-positions-forming 2 \
+      --recycling-stress-mode BOTH \
+      --use-capital-recycling true \
+      --recycle-trigger-mode ALWAYS \
+      --recycle-min-score-gap 0 \
+      --recycle-min-hold-days 0 \
+      --recycle-no-progress-days 0 \
+      --recycle-no-progress-r 999 \
+      --recycle-exclude-confirmed-winners false
+
+Pass condition:
+- outputs/metrics.json contains recycling_effectiveness.recycle_events_count > 0
+- outputs/trades.csv shows evidence of partial/exit recycling actions if they are recorded per-trade.
+- Console includes a small “RECYCLING: events=N” line.
+
+===========================================================
+PART C — FIX RECYCLING COMPARISON SUMMARY (MaxDD% + per-variant isolation)
+===========================================================
+
+Problem observed:
+recycling_comparison_summary.csv shows MaxDD% = 0.00% for all variants even when main run shows drawdown. Also variants may overwrite shared outputs leading to wrong summary.
+
+Goal:
+Comparison runner must compute metrics for each variant independently and report accurate return and max drawdown per variant.
+
+1) Ensure variants are isolated:
+   Option A (preferred): run each variant fully in-memory and return metrics objects + equity curve series without relying on outputs files.
+   Option B: write each variant to its own subdir:
+     outputs/comparison/<run_id>/<variant>/trades.csv, equity.csv, metrics.json
+   Then summarize by reading those variant-specific metrics.
+
+2) Max drawdown must be computed from equity curve properly:
+   - Either:
+     - compute from per-variant equity series directly, OR
+     - read per-variant metrics.json value that is known correct (not zeroed)
+   - Ensure returned number matches the displayed OVERALL Max Drawdown printed by that variant.
+
+3) Update outputs/recycling_comparison_summary.csv to include:
+   variant,total_return_pct,max_drawdown_pct,trades,recycling_events,avg_swap_edge_r,false_recycle_rate,capital_reuse_efficiency
+   (if capital_reuse_efficiency exists already, include it; otherwise omit to keep compatibility)
+
+ACCEPTANCE TESTS (PART C)
+C1) Run comparison with forced recycling scenario (from B2) but also:
+    --run-recycling-comparison true
+
+Pass conditions:
+- outputs/recycling_comparison_summary.csv shows:
+  - recycling_events differs across OFF vs PARTIAL vs EXIT (OFF should be 0)
+  - max_drawdown_pct is non-zero if the strategy experiences drawdowns
+  - metrics are not all identical across variants when recycling fires
+
+===========================================================
+DELIVERABLES
+- Code changes implementing Parts A/B/C.
+- Update replit.md with:
+  - explanation of --price-cache-policy and deterministic backtest recipe
+  - brief explanation of recycling trigger modes
+  - comparison runner output location(s) and interpretation
+
+FINAL CHECKLIST
+- Run compileall passes
+- Determinism hashes match for trades/equity/metrics under READONLY after REFRESH priming
+- Recycling events appear under forced scenario
+- Recycling comparison summary shows correct non-zero MaxDD when applicable and reflects variant differences

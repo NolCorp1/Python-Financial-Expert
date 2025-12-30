@@ -1,0 +1,17 @@
+# Symbols for run: 20251230_030138_848e38ea
+# Generated: 2025-12-30T03:01:43.071877
+# Mode: backtest
+# Count: 12
+
+AAPL
+ADBE
+AMAT
+AVGO
+CRM
+GOOGL
+INTU
+MU
+NVDA
+PYPL
+TSLA
+TXN

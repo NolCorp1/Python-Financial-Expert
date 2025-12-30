@@ -2,14 +2,17 @@
 Price Cache Module for Walk-Forward Optimization.
 
 Task 12B: Download price data once and cache as parquet for fast reuse.
+Task 24A: Added cache policy support (AUTO, READONLY, REFRESH, OFF) for determinism.
 
 Key features:
 - Batch download using yfinance.download with chunking
 - Parquet persistence in data/price_cache/
 - Single download per walk-forward run (no per-window re-downloads)
 - CLI-configurable batch size and cache directory
+- Cache policy modes for deterministic backtests (READONLY guarantees exact reproducibility)
 """
 import os
+import sys
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -19,6 +22,38 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from tqdm import tqdm
+
+
+VALID_CACHE_POLICIES = ('AUTO', 'READONLY', 'REFRESH', 'OFF')
+
+
+class CacheMissError(Exception):
+    """Raised when READONLY policy encounters missing cache data."""
+    pass
+
+
+def normalize_price_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize price data for deterministic storage and retrieval.
+    
+    Rounds prices to 2 decimals, volumes to integers, and standardizes index.
+    """
+    if df is None or df.empty:
+        return df
+    
+    df = df.copy()
+    
+    for col in ['Open', 'High', 'Low', 'Close']:
+        if col in df.columns:
+            df[col] = df[col].round(2)
+    
+    if 'Volume' in df.columns:
+        df['Volume'] = df['Volume'].fillna(0).astype(int)
+    
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+    
+    return df
 
 
 def compute_required_date_range(
@@ -286,6 +321,152 @@ def preload_price_data(
         print(f"Total symbols loaded: {len(result)}")
     
     return result
+
+
+def load_price_data_with_policy(
+    symbols: List[str],
+    start_date: datetime,
+    end_date: datetime,
+    cache_policy: str = "AUTO",
+    cache_dir: str = "data/price_cache",
+    batch_size: int = 50,
+    verbose: bool = True
+) -> Tuple[Dict[str, pd.DataFrame], Dict]:
+    """
+    Load price data using specified cache policy for deterministic backtests.
+    
+    Task 24A: Main entry point for policy-based data loading.
+    
+    Policies:
+    - AUTO: Use cache if valid, fetch and cache missing data (default)
+    - READONLY: Only read from cache, error if any symbol missing
+    - REFRESH: Always fetch fresh data and overwrite cache
+    - OFF: Always fetch fresh without using cache
+    
+    Args:
+        symbols: List of ticker symbols
+        start_date: Required start date
+        end_date: Required end date
+        cache_policy: One of AUTO, READONLY, REFRESH, OFF
+        cache_dir: Directory for parquet cache files
+        batch_size: Symbols per yfinance batch download
+        verbose: Show progress messages
+        
+    Returns:
+        Tuple of (price_data dict, provenance dict)
+        
+    Raises:
+        CacheMissError: If READONLY and any symbol missing from cache
+        ValueError: If invalid cache_policy
+    """
+    policy = cache_policy.upper()
+    if policy not in VALID_CACHE_POLICIES:
+        raise ValueError(f"Invalid cache_policy '{cache_policy}'. Must be one of {VALID_CACHE_POLICIES}")
+    
+    provenance = {
+        'policy': policy,
+        'cache_hits': 0,
+        'cache_misses': 0,
+        'source': 'cache' if policy == 'READONLY' else 'yfinance',
+        'normalized': True,
+        'symbols_requested': len(symbols),
+        'symbols_loaded': 0,
+        'missing_symbols': []
+    }
+    
+    result = {}
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    
+    if policy == 'OFF':
+        if verbose:
+            print(f"\nLoading price data (policy=OFF, fresh download)...")
+        downloaded = batch_download_yfinance(symbols, start_date, end_date, batch_size, verbose)
+        for sym, df in downloaded.items():
+            result[sym] = normalize_price_data(df)
+        provenance['cache_misses'] = len(symbols)
+        provenance['symbols_loaded'] = len(result)
+        return result, provenance
+    
+    if policy == 'REFRESH':
+        if verbose:
+            print(f"\nLoading price data (policy=REFRESH, overwriting cache)...")
+        downloaded = batch_download_yfinance(symbols, start_date, end_date, batch_size, verbose)
+        for sym, df in downloaded.items():
+            normalized = normalize_price_data(df)
+            result[sym] = normalized
+            save_to_cache(sym, normalized, cache_dir)
+        provenance['cache_misses'] = len(symbols)
+        provenance['symbols_loaded'] = len(result)
+        if verbose:
+            print(f"Cache refreshed: {len(result)} symbols saved to {cache_dir}")
+        return result, provenance
+    
+    if policy == 'READONLY':
+        if verbose:
+            print(f"\nLoading price data (policy=READONLY, cache only)...")
+        missing = []
+        for sym in symbols:
+            df = load_from_cache(sym, cache_dir)
+            if df is not None and not df.empty:
+                result[sym] = normalize_price_data(df)
+                provenance['cache_hits'] += 1
+            else:
+                missing.append(sym)
+        
+        if missing:
+            provenance['missing_symbols'] = missing
+            error_msg = (
+                f"READONLY cache policy: {len(missing)} symbol(s) missing from cache.\n"
+                f"Missing: {', '.join(missing[:20])}"
+                + (f" ... and {len(missing) - 20} more" if len(missing) > 20 else "")
+                + f"\n\nTo fix: Run with --price-cache-policy REFRESH first to populate cache."
+            )
+            if verbose:
+                print(f"\nERROR: {error_msg}")
+            raise CacheMissError(error_msg)
+        
+        provenance['source'] = 'cache'
+        provenance['symbols_loaded'] = len(result)
+        if verbose:
+            print(f"Cache loaded: {len(result)} symbols (100% cache hit)")
+        return result, provenance
+    
+    # AUTO: Use cache for valid entries, fetch missing
+    if verbose:
+        print(f"\nLoading price data (policy=AUTO)...")
+    
+    symbols_to_download = []
+    for sym in symbols:
+        if is_cache_valid(sym, cache_dir, start_date, end_date, max_age_hours=9999):
+            df = load_from_cache(sym, cache_dir)
+            if df is not None and not df.empty:
+                result[sym] = normalize_price_data(df)
+                provenance['cache_hits'] += 1
+            else:
+                symbols_to_download.append(sym)
+                provenance['cache_misses'] += 1
+        else:
+            symbols_to_download.append(sym)
+            provenance['cache_misses'] += 1
+    
+    if symbols_to_download:
+        if verbose:
+            print(f"Cache hits: {provenance['cache_hits']}, downloading: {len(symbols_to_download)}")
+        downloaded = batch_download_yfinance(symbols_to_download, start_date, end_date, batch_size, verbose)
+        for sym, df in downloaded.items():
+            normalized = normalize_price_data(df)
+            result[sym] = normalized
+            save_to_cache(sym, normalized, cache_dir)
+    
+    provenance['source'] = 'mixed' if symbols_to_download and provenance['cache_hits'] > 0 else (
+        'cache' if not symbols_to_download else 'yfinance'
+    )
+    provenance['symbols_loaded'] = len(result)
+    
+    if verbose:
+        print(f"Total loaded: {len(result)} symbols")
+    
+    return result, provenance
 
 
 def clear_price_cache(cache_dir: str = "data/price_cache", symbols: Optional[List[str]] = None):

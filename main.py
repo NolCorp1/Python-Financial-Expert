@@ -51,7 +51,9 @@ def scan_stocks_with_liquidity(
     config: dict,
     use_liquidity_filter: bool = True,
     liquidity_config: dict = None,
-    verbose: bool = True
+    verbose: bool = True,
+    price_cache_policy: str = 'OFF',
+    price_cache_dir: str = 'data/price_cache'
 ):
     """
     Scan stocks for double bottom patterns with optional liquidity filtering.
@@ -62,12 +64,16 @@ def scan_stocks_with_liquidity(
         use_liquidity_filter: Whether to apply liquidity filter
         liquidity_config: Liquidity filter parameters
         verbose: Show progress
+        price_cache_policy: Cache policy (AUTO, READONLY, REFRESH, OFF)
+        price_cache_dir: Directory for price cache files
         
     Returns:
-        Tuple of (results_df, price_data_dict)
+        Tuple of (results_df, price_data_dict, price_provenance)
     """
     from tqdm import tqdm
     import pandas as pd
+    from datetime import datetime, timedelta
+    from price_cache import load_price_data_with_policy, normalize_price_data, CacheMissError
     
     if liquidity_config is None:
         liquidity_config = {
@@ -86,57 +92,130 @@ def scan_stocks_with_liquidity(
     price_data = {}
     all_patterns = []
     liquidity_report = []
+    price_provenance = {'policy': price_cache_policy.upper(), 'cache_hits': 0, 'cache_misses': 0}
     
-    iterator = tqdm(symbols, desc="Downloading & filtering") if verbose else symbols
-    
-    for symbol in iterator:
-        df = download_stock_data(symbol, years=config['download_years'])
+    # If using cache policy, load all data upfront
+    if price_cache_policy.upper() != 'OFF':
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=config['download_years'] * 365)
         
-        if df is None or len(df) < 100:
-            n_no_data += 1
-            liquidity_report.append({
-                'symbol': symbol,
-                'pass_liquidity': False,
-                'price_last': None,
-                'avg_dollar_vol_20': None,
-                'reason': 'no_data'
-            })
-            continue
-        
-        if use_liquidity_filter:
-            passed, diag = passes_liquidity_filter(
-                df,
-                min_price=liquidity_config.get('min_price', 5.0),
-                min_avg_dollar_vol=liquidity_config.get('min_avg_dollar_vol', 20_000_000),
-                window=liquidity_config.get('window', 20)
+        try:
+            bulk_data, price_provenance = load_price_data_with_policy(
+                symbols=symbols,
+                start_date=start_date,
+                end_date=end_date,
+                cache_policy=price_cache_policy,
+                cache_dir=price_cache_dir,
+                verbose=verbose
             )
+        except CacheMissError as e:
+            print(f"\n{e}")
+            import sys
+            sys.exit(1)
+        
+        # Process bulk-loaded data through liquidity filter
+        for symbol in (tqdm(symbols, desc="Processing symbols") if verbose else symbols):
+            df = bulk_data.get(symbol)
             
-            liquidity_report.append({
-                'symbol': symbol,
-                'pass_liquidity': passed,
-                'price_last': diag.get('price_last'),
-                'avg_dollar_vol_20': diag.get('avg_dollar_vol_20'),
-                'reason': diag.get('reason')
-            })
-            
-            if not passed:
-                n_failed_liquidity += 1
+            if df is None or len(df) < 100:
+                n_no_data += 1
+                liquidity_report.append({
+                    'symbol': symbol,
+                    'pass_liquidity': False,
+                    'price_last': None,
+                    'avg_dollar_vol_20': None,
+                    'reason': 'no_data'
+                })
                 continue
+            
+            if use_liquidity_filter:
+                passed, diag = passes_liquidity_filter(
+                    df,
+                    min_price=liquidity_config.get('min_price', 5.0),
+                    min_avg_dollar_vol=liquidity_config.get('min_avg_dollar_vol', 20_000_000),
+                    window=liquidity_config.get('window', 20)
+                )
+                
+                liquidity_report.append({
+                    'symbol': symbol,
+                    'pass_liquidity': passed,
+                    'price_last': diag.get('price_last'),
+                    'avg_dollar_vol_20': diag.get('avg_dollar_vol_20'),
+                    'reason': diag.get('reason')
+                })
+                
+                if not passed:
+                    n_failed_liquidity += 1
+                    continue
+            
+            lookback = min(config['lookback_days'], len(df))
+            df_recent = df.iloc[-lookback:]
+            price_data[symbol] = df_recent
+            n_scanned += 1
+            
+            patterns = detect_double_bottom(df_recent, config)
+            n_patterns += len(patterns)
+            
+            for pattern in patterns:
+                pattern['symbol'] = symbol
+                bottom2_date = pattern['bottom2_date']
+                date_str = pd.Timestamp(bottom2_date).strftime('%Y%m%d')
+                pattern['pattern_id'] = f"{symbol}_{date_str}_{pattern['status']}"
+                all_patterns.append(pattern)
+    else:
+        # Original per-symbol download behavior (OFF policy)
+        iterator = tqdm(symbols, desc="Downloading & filtering") if verbose else symbols
         
-        lookback = min(config['lookback_days'], len(df))
-        df_recent = df.iloc[-lookback:]
-        price_data[symbol] = df_recent
-        n_scanned += 1
-        
-        patterns = detect_double_bottom(df_recent, config)
-        n_patterns += len(patterns)
-        
-        for pattern in patterns:
-            pattern['symbol'] = symbol
-            bottom2_date = pattern['bottom2_date']
-            date_str = pd.Timestamp(bottom2_date).strftime('%Y%m%d')
-            pattern['pattern_id'] = f"{symbol}_{date_str}_{pattern['status']}"
-            all_patterns.append(pattern)
+        for symbol in iterator:
+            df = download_stock_data(symbol, years=config['download_years'])
+            if df is not None:
+                df = normalize_price_data(df)
+            
+            if df is None or len(df) < 100:
+                n_no_data += 1
+                liquidity_report.append({
+                    'symbol': symbol,
+                    'pass_liquidity': False,
+                    'price_last': None,
+                    'avg_dollar_vol_20': None,
+                    'reason': 'no_data'
+                })
+                continue
+            
+            if use_liquidity_filter:
+                passed, diag = passes_liquidity_filter(
+                    df,
+                    min_price=liquidity_config.get('min_price', 5.0),
+                    min_avg_dollar_vol=liquidity_config.get('min_avg_dollar_vol', 20_000_000),
+                    window=liquidity_config.get('window', 20)
+                )
+                
+                liquidity_report.append({
+                    'symbol': symbol,
+                    'pass_liquidity': passed,
+                    'price_last': diag.get('price_last'),
+                    'avg_dollar_vol_20': diag.get('avg_dollar_vol_20'),
+                    'reason': diag.get('reason')
+                })
+                
+                if not passed:
+                    n_failed_liquidity += 1
+                    continue
+            
+            lookback = min(config['lookback_days'], len(df))
+            df_recent = df.iloc[-lookback:]
+            price_data[symbol] = df_recent
+            n_scanned += 1
+            
+            patterns = detect_double_bottom(df_recent, config)
+            n_patterns += len(patterns)
+            
+            for pattern in patterns:
+                pattern['symbol'] = symbol
+                bottom2_date = pattern['bottom2_date']
+                date_str = pd.Timestamp(bottom2_date).strftime('%Y%m%d')
+                pattern['pattern_id'] = f"{symbol}_{date_str}_{pattern['status']}"
+                all_patterns.append(pattern)
     
     os.makedirs('outputs', exist_ok=True)
     liq_df = pd.DataFrame(liquidity_report)
@@ -146,7 +225,7 @@ def scan_stocks_with_liquidity(
           f"Liquidity pass: {n_scanned} | Patterns: {n_patterns}")
     
     if not all_patterns:
-        return pd.DataFrame(), price_data
+        return pd.DataFrame(), price_data, price_provenance
     
     results_df = pd.DataFrame(all_patterns)
     
@@ -173,7 +252,7 @@ def scan_stocks_with_liquidity(
         ascending=[False, False, False]
     )
     
-    return results_df, price_data
+    return results_df, price_data, price_provenance
 
 
 def run_backtest(symbols: list, config: dict, 
@@ -584,6 +663,14 @@ def main():
                        choices=['true', 'false'],
                        help='Run OFF/PARTIAL/EXIT recycling comparison')
     
+    # Price cache policy (Task 24A)
+    parser.add_argument('--price-cache-policy', type=str, default='OFF',
+                       choices=['AUTO', 'READONLY', 'REFRESH', 'OFF'],
+                       help='Price cache policy: AUTO (use cache if valid), READONLY (cache only, error if missing), '
+                            'REFRESH (always refetch and cache), OFF (no cache, default)')
+    parser.add_argument('--price-cache-dir', type=str, default='data/price_cache',
+                       help='Directory for price cache parquet files')
+    
     parser.add_argument('--symbols-seed', type=int, default=None,
                        help='Random seed for deterministic symbol subset selection')
     parser.add_argument('--parity-check', action='store_true',
@@ -982,11 +1069,13 @@ def main():
         if args.use_regime_filter.lower() == 'true' and regime_symbol not in symbols_with_regime:
             symbols_with_regime.append(regime_symbol)
         
-        results, price_data = scan_stocks_with_liquidity(
+        results, price_data, price_provenance = scan_stocks_with_liquidity(
             symbols_with_regime, config, 
             use_liquidity_filter=use_liquidity_filter,
             liquidity_config=liquidity_config,
-            verbose=not args.quiet
+            verbose=not args.quiet,
+            price_cache_policy=args.price_cache_policy,
+            price_cache_dir=args.price_cache_dir
         )
         
         if results.empty:
@@ -1252,6 +1341,13 @@ def main():
             liquidity_config=liquidity_config,
             extra_info={
                 'symbols_seed': args.symbols_seed,
+                'price_data': {
+                    'policy': price_provenance.get('policy', 'OFF'),
+                    'cache_hits': price_provenance.get('cache_hits', 0),
+                    'cache_misses': price_provenance.get('cache_misses', 0),
+                    'source': price_provenance.get('source', 'yfinance'),
+                    'normalized': price_provenance.get('normalized', True),
+                },
                 'metrics': {
                     'total_return': split_metrics.get('ALL', {}).get('total_return_pct', 0),
                     'max_dd': split_metrics.get('ALL', {}).get('max_drawdown_pct', 0),
@@ -1282,11 +1378,13 @@ def main():
     print(f"Lookback period: {config['lookback_days']} days")
     print("="*60 + "\n")
     
-    results, price_data = scan_stocks_with_liquidity(
+    results, price_data, price_provenance = scan_stocks_with_liquidity(
         symbols, config, 
         use_liquidity_filter=use_liquidity_filter,
         liquidity_config=liquidity_config,
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        price_cache_policy=args.price_cache_policy,
+        price_cache_dir=args.price_cache_dir
     )
     
     print_summary(results)
