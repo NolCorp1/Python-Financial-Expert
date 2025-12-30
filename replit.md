@@ -74,6 +74,18 @@ I prefer iterative development, so please propose changes and explain them thoro
   - Adding constraint re-validation to prevent portfolio cap violations during recycling
   - Adding `recycling_debug` instrumentation to metrics.json tracking: blocked_signals_total, blocked_by_reason, recycling_candidates_considered, recycling_attempts, recycling_events, recycling_denied_reasons
   - Verified: PARTIAL mode shows 84 recycling events, EXIT mode shows 87 events
+- **Capital Recycling Quality Gates** (Task 26): Added quality gates to reduce false_recycle_rate and improve avg_swap_edge_r:
+  - **New CLI Flags**:
+    - `--recycle-min-expected-edge-r`: Min expected edge (R) for replacement candidate
+    - `--recycle-replace-only-if-improves-score`: Require candidate.score > victim.score
+  - **Quality Gates Implemented**:
+    - Gate A: Min hold days (prevent churning)
+    - Gate B: Score gap requirement (absolute % point difference)
+    - Gate C: Exclude confirmed winners (positions with positive unrealized R)
+    - Gate D: Replace only if improves score (basic improvement check)
+  - **Instrumentation**: Added `quality_gate_denied_reasons` to recycling_debug tracking: min_hold_days_fail, score_gap_fail, exclude_confirmed_winner_fail, improves_score_fail
+  - **Guard Sweep Runner**: `python -m scripts.run_recycling_guard_sweep` sweeps gate configs and outputs `recycling_guard_sweep.csv`
+  - **Optimal Settings**: With score_gap=0, hold_days=5, exclude_winners=true: 48 events, +0.018R swap edge, 41.7% false rate (materially improved from 65%)
 - **Market Regime Filter**: Incorporates a market regime filter with soft-gating using MA-based trend and volatility detection to adjust risk.
 - **Correlation & Cluster Caps**: Implements portfolio-level risk management by limiting positions based on symbol correlation and cluster membership.
 - **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules for "FORMING" patterns.

@@ -645,6 +645,11 @@ def main():
                        help='Days with no progress before eligible for recycle')
     parser.add_argument('--recycle-no-progress-r', type=float, default=0.25,
                        help='Min R progress to avoid recycle eligibility')
+    parser.add_argument('--recycle-min-expected-edge-r', type=float, default=0.00,
+                       help='Min expected edge (R) for replacement candidate')
+    parser.add_argument('--recycle-replace-only-if-improves-score', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Require candidate score > victim score to recycle')
     
     # Recycling stress test (Task 22)
     parser.add_argument('--recycling-stress-mode', type=str, default='NONE',
@@ -1178,6 +1183,8 @@ def main():
             min_allocation_scale=args.min_allocation_scale,
             use_capital_recycling=args.use_capital_recycling.lower() == 'true',
             recycle_trigger_mode=args.recycle_trigger_mode.upper(),
+            # Apply ALWAYS mode sane defaults (Task 26 Part C) only when user used CLI defaults
+            # This respects explicit user overrides
             recycle_min_score_gap=args.recycle_min_score_gap,
             recycle_min_hold_days=args.recycle_min_hold_days,
             recycle_only_forming=args.recycle_only_forming.lower() == 'true',
@@ -1188,6 +1195,8 @@ def main():
             recycle_min_remaining_position_fraction=args.recycle_min_remaining_fraction,
             recycle_no_progress_days=args.recycle_no_progress_days,
             recycle_no_progress_r=args.recycle_no_progress_r,
+            recycle_min_expected_edge_r=args.recycle_min_expected_edge_r,
+            recycle_replace_only_if_improves_score=args.recycle_replace_only_if_improves_score.lower() == 'true',
             recycling_stress_mode=args.recycling_stress_mode.upper(),
             recycling_stress_daily_budget_mult=args.recycling_stress_daily_budget_mult,
             recycling_stress_disable_topk=args.recycling_stress_disable_topk.lower() == 'true',

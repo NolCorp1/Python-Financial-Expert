@@ -1,4 +1,4 @@
 variant,total_return_pct,max_drawdown_pct,trades,recycling_events,avg_swap_edge_r,false_recycle_rate
 OFF,10.02,-2.83,67,0,0.0,0.0
-PARTIAL,5.19,-2.42,151,84,-0.0175,65.48
-EXIT,-1.13,-6.4,133,87,-0.0108,50.57
+PARTIAL,9.41,-2.42,102,35,-0.0006,45.71
+EXIT,5.95,-3.64,90,34,0.0812,47.06

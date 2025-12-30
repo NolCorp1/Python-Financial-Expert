@@ -128,6 +128,9 @@ class BacktestConfig:
     recycle_min_remaining_position_fraction: float = 0.25  # don't shrink below this
     recycle_no_progress_days: int = 25
     recycle_no_progress_r: float = 0.25
+    # Quality gates (Task 26)
+    recycle_min_expected_edge_r: float = 0.00  # min expected edge for replacement
+    recycle_replace_only_if_improves_score: bool = True  # require candidate.score > victim.score
     
     # Stress test controls (Task 22)
     recycling_stress_mode: str = "NONE"  # NONE, LOW_BUDGET, HIGH_SIGNAL_DENSITY, BOTH
@@ -696,6 +699,9 @@ def run_backtest(
         'recycling_attempts': 0,
         'recycling_events': 0,
         'recycling_denied_reasons': {},
+        'quality_gate_denied_reasons': {},
+        'total_candidates_before_gates': 0,
+        'total_candidates_after_gates': 0,
     }
     
     corr_matrix = pd.DataFrame()
@@ -1286,32 +1292,61 @@ def run_backtest(
             for blocked_cand in blocked:
                 new_score = blocked_cand.allocation_score
                 recycling_debug['recycling_attempts'] += 1
+                recycling_debug['total_candidates_before_gates'] = recycling_debug.get('total_candidates_before_gates', 0) + len(open_positions)
                 
                 # Find recyclable positions (worst first based on recycle score)
                 recyclable = []
                 for sym in sorted(open_positions.keys()):
                     pos = open_positions[sym]
-                    # Eligibility checks
-                    if pos.bars_held < cfg.recycle_min_hold_days:
+                    
+                    # Gate A: Minimum hold days
+                    if cfg.recycle_min_hold_days > 0 and pos.bars_held < cfg.recycle_min_hold_days:
+                        recycling_debug['quality_gate_denied_reasons']['min_hold_days_fail'] = \
+                            recycling_debug['quality_gate_denied_reasons'].get('min_hold_days_fail', 0) + 1
                         continue
+                    
+                    # Only FORMING filter
                     if cfg.recycle_only_forming and pos.entry_kind != "FORMING":
                         continue
+                    
+                    # Gate C: Exclude confirmed winners (using current unrealized R)
                     if cfg.recycle_exclude_confirmed_winners:
-                        if pos.entry_kind == "CONFIRMED" and pos.mfe_r >= 0.5:
-                            continue
+                        if pos.entry_kind == "CONFIRMED":
+                            current_price = recycle_prices.get(sym)
+                            initial_risk = pos.entry_fill - pos.original_stop_loss
+                            if current_price is not None and initial_risk > 0:
+                                unrealized_r = (current_price - pos.entry_fill) / initial_risk
+                            else:
+                                unrealized_r = pos.mfe_r  # fallback to MFE
+                            if unrealized_r > 0:
+                                recycling_debug['quality_gate_denied_reasons']['exclude_confirmed_winner_fail'] = \
+                                    recycling_debug['quality_gate_denied_reasons'].get('exclude_confirmed_winner_fail', 0) + 1
+                                continue
+                    
                     if sym not in recycle_prices:
                         continue
                     
                     pos_recycle_score = compute_position_recycle_score(pos, cfg.recycle_rank_metric)
                     
-                    # Check score gap requirement
-                    if pos_recycle_score > 0:
-                        score_gap = (new_score / pos_recycle_score) - 1.0
-                    else:
-                        score_gap = 999.0
+                    # Gate D: Replace only if improves score
+                    if cfg.recycle_replace_only_if_improves_score:
+                        if new_score <= pos_recycle_score:
+                            recycling_debug['quality_gate_denied_reasons']['improves_score_fail'] = \
+                                recycling_debug['quality_gate_denied_reasons'].get('improves_score_fail', 0) + 1
+                            continue
                     
-                    if cfg.recycle_min_score_gap <= 0 or score_gap >= cfg.recycle_min_score_gap:
-                        recyclable.append((sym, pos, pos_recycle_score))
+                    # Gate A: Score gap requirement (absolute difference, not ratio)
+                    # recycle_min_score_gap is interpreted as percentage points (6 = 6% absolute difference)
+                    score_gap_abs = (new_score - pos_recycle_score) * 100  # Convert to percentage points
+                    
+                    if cfg.recycle_min_score_gap > 0 and score_gap_abs < cfg.recycle_min_score_gap:
+                        recycling_debug['quality_gate_denied_reasons']['score_gap_fail'] = \
+                            recycling_debug['quality_gate_denied_reasons'].get('score_gap_fail', 0) + 1
+                        continue
+                    
+                    recyclable.append((sym, pos, pos_recycle_score))
+                
+                recycling_debug['total_candidates_after_gates'] = recycling_debug.get('total_candidates_after_gates', 0) + len(recyclable)
                 
                 # Sort by recycle score (worst = lowest first), with stable tie-break
                 recyclable.sort(key=lambda x: (x[2], x[0]))

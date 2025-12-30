@@ -1,0 +1,177 @@
+Task 26 — Capital Recycling Quality Gates (Reduce False Recycle Rate)
+
+Goal
+Bring false_recycle_rate down to <= 40% and avg_swap_edge_r to >= 0.00R (preferably > +0.05R) while keeping determinism intact (READONLY cache) and respecting position caps.
+
+Why
+Recycling is firing (events>0) and caps are respected, but swaps are low-quality:
+- avg_swap_edge_r is slightly negative
+- false_recycle_rate is very high
+We need guardrails so recycling only happens when the replacement signal is meaningfully better.
+
+Scope
+1) Add quality gates to recycling candidate selection.
+2) Add an experiment runner to sweep guard settings and output a comparison table.
+3) Update defaults to sane values for ALWAYS mode.
+
+------------------------------------------------------------
+Part A — Implement Quality Gates (Code Changes)
+------------------------------------------------------------
+
+Files to edit:
+- backtester.py
+- (optional) main.py / CLI arg parsing if any flags missing
+- metrics.py (only if you need to compute new metrics)
+
+1) Add/confirm CLI flags exist (or add them)
+These should already exist, but verify they are wired into run_backtest_v2/backtester config:
+
+- --recycle-min-score-gap (int, default 6 for ALWAYS)
+- --recycle-min-hold-days (int, default 3)
+- --recycle-exclude-confirmed-winners (bool, default true for ALWAYS)
+- --recycle-min-expected-edge-r (float, default 0.00)  [NEW]
+- --recycle-replace-only-if-improves-score (bool, default true) [NEW]
+
+If NEW flags are added:
+- Update argparse in main.py
+- Thread into config object passed to backtester
+
+2) Define “replacement must be meaningfully better”
+In the recycling decision block (where you currently decide whether to recycle an open position for a blocked candidate):
+Add these checks BEFORE creating a recycling event.
+
+A. Score Gap Gate (already present, but ensure correct behavior)
+- If recycle_min_score_gap <= 0: bypass score-gap check.
+- Else require: candidate.score >= victim.score + recycle_min_score_gap
+
+B. Minimum Hold Days Gate
+Compute hold_days for the victim position at the decision date:
+- hold_days = (today_date - victim.entry_date).days
+Require hold_days >= recycle_min_hold_days (unless recycle_min_hold_days <= 0)
+
+C. Exclude Confirmed Winners Gate
+If recycle_exclude_confirmed_winners is true:
+- If victim is CONFIRMED and victim.current_r > 0: do NOT recycle it.
+(Use whatever “current R” or unrealized R metric exists; if not available, approximate using pnl / initial_risk.)
+
+D. NEW: Expected Edge / Improvement Gate
+We need a deterministic, available proxy. Use one of these (pick best available in your code):
+- If you have candidate.expected_r or candidate.edge_r: require it >= recycle_min_expected_edge_r
+- If not, use candidate.score as proxy: require candidate.score >= victim.score (and also the score gap gate)
+
+Implement as:
+- If recycle_replace_only_if_improves_score is true:
+    candidate.score must be strictly > victim.score (or >= victim.score + 1)
+- If recycle_min_expected_edge_r is provided and you have candidate edge metric:
+    require candidate_edge_r >= recycle_min_expected_edge_r
+
+3) Update recycling_debug instrumentation
+Extend metrics.json recycling_debug with:
+- quality_gate_denied_reasons counts:
+  - score_gap_fail
+  - min_hold_days_fail
+  - exclude_confirmed_winner_fail
+  - expected_edge_fail
+  - improves_score_fail
+- total_candidates_before_gates
+- total_candidates_after_gates
+
+Make sure recycling_debug is included in metrics.json output (already done in Task 25).
+
+------------------------------------------------------------
+Part B — Add Guard Sweep Runner (Experiment Harness)
+------------------------------------------------------------
+
+Create new script:
+- scripts/run_recycling_guard_sweep.py
+
+Behavior:
+- Runs the same backtest command multiple times (subprocess) with different guard configs.
+- ALWAYS use:
+  --price-cache-policy READONLY
+  --run-recycling-comparison true
+  plus the user’s repro constraints:
+    --daily-risk-budget 0.01
+    --daily-risk-budget-forming 0.003
+    --max-positions-total 4
+    --max-positions-forming 2
+    --recycle-trigger-mode ALWAYS
+
+Sweep grid (hardcode for now):
+- recycle_min_score_gap: [0, 3, 6, 8]
+- recycle_min_hold_days: [0, 3, 5]
+- recycle_exclude_confirmed_winners: [false, true]
+
+For each run:
+- Read outputs/metrics.json
+- Extract:
+  - recycling_effectiveness: recycle_events_count, avg_swap_edge_r, false_recycle_rate, pct_trades_recycled
+  - overall: total_return_pct, max_drawdown_pct, trades
+- Append to a dataframe and write:
+  outputs/recycling_guard_sweep.csv
+
+Also print a top-5 ranked summary to console:
+Rank by:
+1) false_recycle_rate ascending
+2) avg_swap_edge_r descending
+3) total_return_pct descending
+
+------------------------------------------------------------
+Part C — Update Defaults (Sane ALWAYS Mode Defaults)
+------------------------------------------------------------
+
+If trigger mode is ALWAYS and user did not explicitly set these flags:
+Set defaults to:
+- recycle_min_score_gap = 6
+- recycle_min_hold_days = 3
+- recycle_exclude_confirmed_winners = true
+- recycle_replace_only_if_improves_score = true
+- recycle_min_expected_edge_r = 0.00
+
+Do NOT change defaults for BUDGET_BLOCKED unless explicitly requested.
+
+------------------------------------------------------------
+Acceptance Criteria
+------------------------------------------------------------
+
+1) Determinism still holds with READONLY cache:
+Run twice and hashes match:
+- outputs/trades.csv
+- outputs/equity.csv
+- outputs/metrics.json
+
+Use command:
+python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet \
+  --price-cache-policy READONLY \
+  --daily-risk-budget 0.01 --daily-risk-budget-forming 0.003 \
+  --max-positions-total 4 --max-positions-forming 2 \
+  --use-capital-recycling true \
+  --recycle-trigger-mode ALWAYS \
+  --run-recycling-comparison true
+
+2) Recycling quality improves under sane defaults:
+With the above command (no extra recycle flags), metrics.json should show:
+- recycle_events_count > 0
+- false_recycle_rate <= 40%  (or at least materially lower than ~65%)
+- avg_swap_edge_r >= 0.00R
+
+3) Guard sweep script works:
+python -m scripts.run_recycling_guard_sweep
+Creates:
+- outputs/recycling_guard_sweep.csv
+And prints top-5 configs.
+
+4) Position caps remain respected:
+Your existing verification script (the position_uid stitching approach) should still report:
+- max open_total <= 4
+- max open_forming <= 2
+
+Notes
+- Keep changes minimal and deterministic.
+- Prefer using existing signal fields (score/edge) rather than introducing any new randomness.
+- If “current_r” isn’t tracked for open positions, add a deterministic computation using current price vs entry, divided by initial risk.
+
+Deliverables
+- Code changes committed
+- outputs/recycling_guard_sweep.csv produced from a local run
+- Brief summary in replit.md: new flags, defaults, and how to run the sweep

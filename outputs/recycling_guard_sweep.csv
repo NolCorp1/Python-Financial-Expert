@@ -1,0 +1,7 @@
+score_gap,hold_days,exclude_winners,total_return_pct,max_drawdown_pct,trades,recycle_events,avg_swap_edge_r,false_recycle_rate
+3,5,true,0,0,0,0,0.0,0.0
+3,8,true,0,0,0,0,0.0,0.0
+0,5,true,0,0,0,48,0.0179,41.67
+0,8,true,0,0,0,39,0.0215,43.59
+0,10,true,0,0,0,35,-0.0006,45.71
+0,8,false,0,0,0,57,-0.0165,63.16
