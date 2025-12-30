@@ -102,6 +102,42 @@ The portfolio state file (`data/paper/portfolio_state.json`) contains:
 | `--max-positions-forming` | 5 | Maximum forming-stage positions |
 | `--daily-risk-budget` | 0.01 | Daily risk allocation (1%) |
 
+### Weekly Reporting
+
+Generate weekly aggregation reports from daily paper trading outputs:
+
+```bash
+# Generate report for a specific ISO week
+python scripts/generate_paper_weekly_report.py --week 2024-W09
+
+# Generate report for a date range
+python scripts/generate_paper_weekly_report.py --start 2024-02-26 --end 2024-03-01
+
+# Verify determinism with SHA256 hashes
+sha256sum outputs/paper/weekly/2024-W09/*.csv
+```
+
+Weekly reports are output to `outputs/paper/weekly/YYYY-WW/`:
+
+| File | Description |
+|------|-------------|
+| `weekly_report.md` | Human-readable weekly summary |
+| `equity_curve.csv` | Daily equity snapshots |
+| `exposure_timeseries.csv` | Daily exposure metrics |
+| `recycling_timeseries.csv` | Daily recycling events |
+| `performance_by_entry_kind.csv` | FORMING vs CONFIRMED attribution |
+| `performance_by_score_bucket.csv` | Score-based performance |
+| `recycling_attribution.csv` | Swap-level recycling details |
+
+### Daily Report Sections
+
+Each daily report (`report.md`) includes:
+
+1. **Portfolio Snapshot**: Starting/ending equity, daily PnL, cash vs invested
+2. **Exposure Summary**: Exposure by symbol, largest position %
+3. **Recycling Summary**: Events, capital freed, swap edge, blocked attempts
+4. **Signal Intake Summary**: Signals generated, skipped reasons, accepted
+
 ## External Dependencies
 - **yfinance**: For downloading historical stock market data.
 - **pandas**: For data manipulation and analysis.
