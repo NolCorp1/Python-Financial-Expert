@@ -1,0 +1,200 @@
+Task 23 — Determinism + Recycling Trigger Fix + Comparison Metrics Integrity
+
+Owner: Replit Agent
+Repo: current workspace (Python 3.12)
+Goal: Make backtest outputs deterministic (byte-for-byte stable given same args) AND ensure capital recycling actually triggers when intended, plus fix recycling comparison metrics (MaxDD% currently prints 0.00%).
+
+Context / Observed Bugs
+1) Non-determinism:
+   - Same CLI args + same symbols list body => outputs/trades.csv, outputs/equity.csv, outputs/metrics.json hashes differ run-to-run.
+   - User scrubbed volatile keys from metrics.json and still found drift:
+       max_drawdown_abs 6072.65 vs 6072.66 (penny-level differences).
+   - This indicates unstable ordering (set/dict iteration / tie sorts) and/or inconsistent rounding.
+
+2) Recycling never triggers:
+   - Even with extreme flags meant to force recycling:
+       --recycle-trigger-mode ALWAYS
+       --recycle-min-score-gap 0
+       --recycle-min-hold-days 0
+       --recycle-no-progress-days 0
+       --recycle-no-progress-r 999
+       --recycle-exclude-confirmed-winners false
+     recycling_effectiveness shows recycle_events_count = 0 and comparison shows 0 recycling events.
+
+   - Yet skip reasons show position pressure:
+       “Max total positions”, “Max FORMING positions”, cluster caps, etc.
+   - Likely recycler only triggers on budget_blocked and ignores position_blocked / cap_blocked.
+
+3) Recycling comparison summary bug:
+   - recycling_comparison_summary.csv shows max_drawdown_pct = 0 for all variants, even when main run prints non-zero drawdown.
+   - Comparison runner likely reading wrong metric, wrong file, or defaulting to 0.
+
+Deliverables
+A) Deterministic backtest outputs:
+   - Two consecutive identical runs MUST produce identical:
+     - outputs/trades.csv
+     - outputs/equity.csv
+     - outputs/metrics.json
+     - outputs/score_bucket_report.csv
+     - outputs/score_threshold_report.csv
+     - outputs/feature_attribution_report.csv
+   - “Identical” means sha256 sums match exactly, not just approximate.
+
+B) Recycling triggers correctly:
+   - Under “forced” settings (see Acceptance Tests) recycle_events_count must be > 0 and recycling_comparison_summary.csv must show different metrics across variants when recycling changes behavior.
+   - Ensure trigger mode ALWAYS can trigger recycling when blocked by:
+     - max positions
+     - cluster caps
+     - budget caps
+     - any other allocation constraint preventing best candidate entries
+
+C) Recycling comparison summary metrics fixed:
+   - max_drawdown_pct must reflect actual drawdown per variant (never 0 unless truly monotonic equity).
+   - Ensure the summary is computed from the variant’s equity curve / metrics, not stale/last run.
+
+Files to Inspect / Likely Edit
+- backtester.py (core sim, ordering, metrics outputs, recycling hook)
+- strategy.py (signal selection / ordering / tie-breaks)
+- metrics.py (drawdown computation + rounding rules)
+- manifest.py (run id, metadata; ensure volatile fields don’t leak into deterministic artifacts)
+- optimize.py (only if it impacts backtest determinism)
+- main.py (CLI flags propagation into backtester / comparison runner)
+- any helper modules creating lists via set/dict iteration: pattern_scoring.py, universe.py, price_cache.py
+
+Required Investigation Steps (Agent must do these first)
+1) Repro non-determinism with a script:
+   - Create scripts/repro_determinism.py that runs the same CLI twice (subprocess) and compares sha256 for key outputs.
+   - Print a short diff summary if mismatch.
+
+2) Locate sources of unstable ordering:
+   - Search for set()/dict iteration in trade/signal loops:
+     grep -R "set(" -n .
+     grep -R "for .* in .*dict" -n .
+     grep -R "\.items()" -n .
+   - Find any sorting operations without full tie-breaks:
+     grep -R "sort_values" -n .
+     grep -R "sorted(" -n .
+   - Identify candidate/trade lists that can have ties (same timestamp/score).
+
+3) Locate where recycling is supposed to trigger:
+   - Search for “recycl” usage:
+     grep -R "recycl" -n .
+   - Identify the gate condition that calls the recycling function.
+   - Verify whether position_blocked/cap_blocked is considered.
+
+Implementation Requirements (Do not skip)
+I) Deterministic Ordering Standard
+Wherever signals/patterns/candidates/trades are iterated, enforce stable ordering:
+- Must sort with a deterministic composite key that breaks ties uniquely.
+- Recommended key chain (adapt to available fields):
+  (date, signal_type_rank, -score, -score_per_risk, symbol, pattern_id_or_hash, entry_price_rounded)
+- If pattern_id doesn’t exist, create one deterministically (hash of symbol + bottom dates + neckline date/price, etc.).
+
+II) Deterministic Numeric Rounding
+- Equity and PnL are dollar/cents concepts; pick a single rounding policy and enforce it:
+  - Round equity to 2 decimals at each equity update step used for drawdown and output.
+  - Round trade fills / proceeds to 2 decimals consistently.
+- Ensure metrics.json drawdown fields use the rounded equity series so penny drift disappears.
+
+III) Deterministic File Outputs
+- CSV outputs must have deterministic row order:
+  - trades.csv: sort by (entry_date, symbol, trade_id) before writing
+  - equity.csv: sort by (date) before writing
+  - report CSVs: sort keys consistently
+- JSON outputs must use sorted keys and stable formatting (indentation consistent).
+- Manifests can keep timestamps/run ids, but those must not affect the deterministic files above.
+  - If metrics.json currently includes volatile fields, either:
+    a) remove them, OR
+    b) store volatile fields under a separate key AND exclude from deterministic hash tests (but Acceptance Tests require metrics.json itself deterministic, so prefer removal or stable values).
+
+IV) Recycling Trigger Fix
+- Ensure recycler can trigger on “blocked by caps” not just “blocked by budget”.
+- Define “blocked” as:
+  blocked = budget_blocked OR position_blocked OR cluster_blocked OR other_constraint_blocked
+- If recycle_trigger_mode == ALWAYS:
+  attempt recycling whenever there exist remaining candidates that were rejected for any constraint.
+- If recycle_trigger_mode == BUDGET_BLOCKED:
+  only attempt when budget_blocked is true (current behavior likely).
+- When a recycling action occurs (PARTIAL or EXIT), record an event in a structured list so recycling_effectiveness is non-empty.
+
+V) Recycling Comparison Runner Fix
+- Ensure each variant run:
+  - runs the backtest with recycling ON/OFF as specified
+  - writes variant-specific metrics/equity/trades to separate temp files or in-memory objects
+- Then compute:
+  - total_return_pct
+  - max_drawdown_pct (from variant equity curve)
+  - trades count
+  - recycling_events count
+  - avg_swap_edge_r
+  - false_recycle_rate
+- Never default max_drawdown_pct to 0; assert it’s computed.
+
+Code Changes (Explicit)
+1) Add a deterministic ID to each signal/trade:
+   - In the structure where signals are created (likely strategy.py or backtester.py),
+     add signal_id = stable hash or stable tuple string.
+   - Ensure it survives through trade creation.
+
+2) Apply stable sorting:
+   - Before allocation each day: sort candidate signals using the composite key.
+   - When iterating open positions for recycling ranking: sort positions deterministically (e.g., by symbol then entry date) BEFORE applying rank metric, then apply rank metric with stable tie-break.
+   - Before writing CSV/JSON outputs: sort.
+
+3) Rounding:
+   - Centralize rounding helpers in metrics.py or backtester.py:
+     round_cash(x) => round(x, 2)
+   - Apply consistently for equity series and drawdown.
+
+4) Recycling trigger:
+   - In the allocation loop, capture rejection reasons.
+   - If ANY rejection due to constraints AND trigger condition met, call recycler with:
+     - current open positions
+     - blocked candidates list (sorted)
+   - Ensure recycler returns (updated_positions, events_list).
+   - Append events and reflect in metrics.json recycling_effectiveness.
+
+5) Comparison:
+   - Modify the comparison runner (where --run-recycling-comparison true is implemented):
+     - run variants OFF/PARTIAL/EXIT in a way that doesn’t overwrite outputs mid-loop OR store each variant’s outputs separately.
+     - compute max drawdown from each variant’s equity curve.
+     - write outputs/recycling_comparison_summary.csv with correct values.
+
+Acceptance Tests (MUST PASS)
+1) Determinism test (byte-for-byte):
+   Run twice and verify sha256 matches:
+   python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet
+   sha256sum outputs/trades.csv outputs/equity.csv outputs/metrics.json outputs/score_bucket_report.csv outputs/score_threshold_report.csv outputs/feature_attribution_report.csv
+   Repeat same command; sha256 outputs MUST match exactly.
+
+2) Forced recycling triggers:
+   python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet \
+     --recycling-stress-mode BOTH --run-recycling-comparison true \
+     --daily-risk-budget 0.01 --daily-risk-budget-forming 0.003 \
+     --max-positions-total 4 --max-positions-forming 2 \
+     --recycle-trigger-mode ALWAYS \
+     --recycle-min-score-gap 0 --recycle-min-hold-days 0 \
+     --recycle-no-progress-days 0 --recycle-no-progress-r 999 \
+     --recycle-exclude-confirmed-winners false
+
+   Must satisfy ALL:
+   - python -c "import json; print(json.load(open('outputs/metrics.json'))['recycling_effectiveness']['recycle_events_count'])"
+     => value > 0
+   - outputs/recycling_comparison_summary.csv shows recycling_events > 0 for PARTIAL and/or EXIT variants (OFF can be 0).
+   - max_drawdown_pct in recycling_comparison_summary.csv is non-zero where applicable and matches computed equity drawdown.
+
+3) Comparison MaxDD sanity:
+   - For each variant, compute drawdown directly from its equity curve and confirm summary equals (within formatting).
+   - Add an internal assert in code: if equity not strictly increasing, maxDD != 0.
+
+Reporting (What agent must output)
+- A concise summary of:
+  - root causes found (exact lines / functions)
+  - fixes applied
+  - results of Acceptance Tests with pasted sha256s and key metrics
+- List of files changed.
+
+Notes / Constraints
+- Do NOT add randomness or “time now” into deterministic output files.
+- Manifest files may remain time/run-id based; deterministic requirement is for the core output files listed above.
+- Keep CLI behavior backward compatible except for determinism and correct recycling behavior.
