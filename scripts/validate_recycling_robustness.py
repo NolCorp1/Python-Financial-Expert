@@ -60,7 +60,7 @@ def run_backtest(seed: int, stress_mode: str, universe: str) -> dict:
         with open(metrics_path) as f:
             metrics = json.load(f)
         
-        overall = metrics.get('overall', {})
+        all_metrics = metrics.get('ALL', {})
         eff = metrics.get('recycling_effectiveness', {})
         debug = metrics.get('recycling_debug', {})
         
@@ -69,14 +69,14 @@ def run_backtest(seed: int, stress_mode: str, universe: str) -> dict:
             'stress_mode': stress_mode,
             'universe': universe,
             'status': 'OK',
-            'total_return_pct': overall.get('total_return_pct', 0),
-            'max_drawdown_pct': overall.get('max_drawdown_pct', 0),
-            'trades': overall.get('total_trades', 0),
+            'total_return_pct': all_metrics.get('total_return_pct', 0),
+            'max_drawdown_pct': all_metrics.get('max_drawdown_pct', 0),
+            'trades': all_metrics.get('trade_count', 0),
             'recycle_events_count': eff.get('recycle_events_count', 0),
             'pct_trades_recycled': eff.get('pct_trades_recycled', 0),
             'avg_swap_edge_r': eff.get('avg_swap_edge_r', 0),
             'false_recycle_rate': eff.get('false_recycle_rate', 0),
-            'avg_capital_reuse_efficiency': eff.get('capital_reuse_efficiency', 0),
+            'avg_capital_reuse_efficiency': eff.get('avg_capital_reuse_efficiency', 0),
             'blocked_signals_total': debug.get('blocked_signals_total', 0),
             'recycling_attempts': debug.get('recycling_attempts', 0),
             'recycling_denied_no_positions': debug.get('recycling_denied_reasons', {}).get('no_recyclable_positions', 0),
