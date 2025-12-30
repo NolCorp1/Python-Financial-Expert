@@ -43,6 +43,65 @@ I prefer iterative development, so please propose changes and explain them thoro
 - **Risk-Based Sizing**: Positions are sized based on defined risk per trade.
 - **Parameter Optimization**: Designed for comprehensive parameter optimization via walk-forward analysis.
 
+## Paper Trading Workflow
+
+The paper trading system supports daily operations for forward testing strategies without risking capital.
+
+### Quick Start
+
+```bash
+# Run paper trading for today (or specify a date)
+python main.py --paper-daily --universe demo --max-stocks 20
+
+# Run for a specific date
+python main.py --paper-daily --paper-date 2024-02-28 --universe demo
+
+# Use cached price data only (for reproducibility)
+python main.py --paper-daily --price-cache-policy READONLY
+
+# Force rerun if already executed today
+python main.py --paper-daily --force
+```
+
+### Key Features
+
+- **Idempotent Runs**: Duplicate runs for the same date are automatically skipped (manifest-based detection)
+- **Portfolio State Management**: Tracks positions, cash, equity, and history in `data/paper/portfolio_state.json`
+- **Order Generation**: Creates orders with pattern metadata, stop prices, and take profits
+- **Position Caps**: Enforces max positions (total and forming) per configuration
+- **Audit Trail**: Every run generates a manifest with provenance (command, git commit, packages)
+
+### Output Files
+
+Each daily run creates outputs in `outputs/paper/YYYYMMDD/`:
+
+| File | Description |
+|------|-------------|
+| `orders.csv` | Machine-readable order list |
+| `orders.json` | Order details with metadata |
+| `report.md` | Human-readable daily summary |
+| `paper_manifest.json` | Provenance and reproducibility data |
+
+### Portfolio State
+
+The portfolio state file (`data/paper/portfolio_state.json`) contains:
+
+- `equity`: Current portfolio value
+- `cash`: Available cash balance
+- `open_positions`: Active positions with entry/stop/metadata
+- `closed_positions`: Historical closed trades
+- `history`: Daily equity snapshots
+
+### Key Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--paper-date` | today | Target date for signals |
+| `--paper-force` | false | Override idempotence check |
+| `--max-positions-total` | 15 | Maximum concurrent positions |
+| `--max-positions-forming` | 5 | Maximum forming-stage positions |
+| `--daily-risk-budget` | 0.01 | Daily risk allocation (1%) |
+
 ## External Dependencies
 - **yfinance**: For downloading historical stock market data.
 - **pandas**: For data manipulation and analysis.
