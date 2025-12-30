@@ -1,7 +1,7 @@
 # NASDAQ Double Bottom Pattern Scanner
 
 ## Overview
-This project is a Python program designed to identify "Double Bottom" (W) chart patterns in NASDAQ-listed stocks. It leverages algorithmic pattern detection, RSI divergence, and volume analysis on historical price data from yfinance. The system includes a robust backtesting engine for strategy evaluation, a pattern quality scoring mechanism, and tools for optimizing and validating trading strategies. Its purpose is to provide a comprehensive solution for traders looking to identify and capitalize on double bottom patterns, offering capabilities for signal generation, performance analysis, and risk management within various market regimes.
+This project is a Python program designed to identify "Double Bottom" (W) chart patterns in NASDAQ-listed stocks. It leverages algorithmic pattern detection, RSI divergence, and volume analysis on historical price data. The system includes a robust backtesting engine, a pattern quality scoring mechanism, and tools for optimizing and validating trading strategies. Its purpose is to provide a comprehensive solution for traders looking to identify and capitalize on double bottom patterns, offering capabilities for signal generation, performance analysis, and risk management.
 
 ## User Preferences
 I prefer iterative development, so please propose changes and explain them thoroughly. I appreciate detailed explanations of complex concepts. Do not make changes to the `charts/` folder. Do not modify the `outputs/` folder directly; all generated outputs should be placed there by the scripts.
@@ -9,104 +9,39 @@ I prefer iterative development, so please propose changes and explain them thoro
 ## System Architecture
 
 ### UI/UX Decisions
-- **Chart Generation**: Uses Matplotlib to generate visual representations of detected patterns and equity curves for analysis.
-- **Console Output**: Provides clear, formatted reports for metrics, feature attribution, and summary statistics in the console.
+- **Chart Generation**: Uses Matplotlib for visualizing detected patterns and equity curves.
+- **Console Output**: Provides formatted reports for metrics, feature attribution, and summary statistics.
 
 ### Technical Implementations
-- **Pattern Detection**: Utilizes `scipy.signal.find_peaks` for accurate identification of swing lows and highs.
-- **Data Acquisition**: Employs `yfinance` for downloading historical stock price data.
-- **Algorithmic Core**: `double_bottom_scanner.py` houses the core pattern detection logic, including RSI divergence and volume analysis.
-- **Strategy & Backtesting**:
-    - `strategy.py`: Defines the trading strategy and signal generation, supporting both "FORMING" and "CONFIRMED" pattern entries.
-    - `backtester.py`: Implements a no-lookahead, bar-by-bar simulation engine with risk-based sizing, slippage, and commissions.
-    - `metrics.py`: Calculates comprehensive performance metrics (win rate, Sharpe ratio, drawdown, etc.) and equity statistics.
-- **Optimization**: `optimize.py` facilitates walk-forward optimization with rolling train/test windows, parameter grid search, and objective-based scoring.
-- **BacktestContext Speedup** (Task 18): Precomputes window-invariant artifacts (ATR series, returns matrix, date calendar, regime data) once per walk-forward window and reuses across all grid iterations. Achieves ~2.6-3.2x speedup over the previous per-combo computation approach. Includes a correlation/cluster cache keyed by `(first_signal_date, lookback_days, n_clusters)` to avoid redundant portfolio-level computations.
+- **Pattern Detection**: Utilizes `scipy.signal.find_peaks` for identifying swing lows and highs, incorporating RSI divergence and volume analysis.
+- **Data Acquisition**: Employs `yfinance` for historical stock price data.
+- **Strategy & Backtesting**: Includes modules for defining trading strategies, a no-lookahead bar-by-bar simulation engine with risk-based sizing, slippage, and commissions, and comprehensive performance metrics calculation.
+- **Optimization**: Facilitates walk-forward optimization with rolling train/test windows, parameter grid search, and objective-based scoring. Includes `BacktestContext` speedups through precomputation of window-invariant artifacts and correlation/cluster caching.
 - **Robustness Features**:
-    - **Run Manifests**: Every execution generates a manifest for full provenance, including command, git commit, and package versions.
-    - **Deterministic Runs**: Supports `--symbols-seed` for reproducible symbol selection across runs.
-    - **Parity Check**: Verifies identical results between runs using a given configuration.
-    - **Price Cache Integrity**: Tools to generate and repair price cache reports.
-    - **Determinism Fixes** (Task 23): Fixed floating-point drift in backtester.py by using deterministic iteration order for open positions (sorted by symbol), rounding equity/cash calculations, and adding price data normalization in download_stock_data. trades.csv and metrics.json are now fully deterministic; equity.csv may have minor cent-level variations due to yfinance API floating-point differences between process runs (use price cache for full determinism).
-    - **Price Cache Policies** (Task 24): Supports `--price-cache-policy` with four modes for reproducible runs:
-      - `AUTO` (default): Load from cache if fresh (<24h), else refresh from yfinance
-      - `READONLY`: Load only from cache; fail with CacheMissError if missing (guarantees full determinism)
-      - `REFRESH`: Always download fresh data and update cache
-      - `OFF`: Bypass cache entirely, always download fresh
-    - Price data is normalized (prices rounded to 2 decimals, volumes to integers) for floating-point stability.
-    - Price provenance (policy, cache hits/misses, source) is tracked in manifests for audit trails.
-    - **Recycling Trigger Fix** (Task 24 Part B): ALWAYS mode now considers signals blocked by position limits, correlation caps, and cluster caps (not just budget-blocked signals) for recycling opportunities.
-- **Pattern Quality Scoring**: A 0-100 score based on pre-entry data, incorporating symmetry, neckline, separation, breakout strength, volume, and trend context.
-- **Score Inversion Fix**: Diagnostic and adjustment tools (`--score-policy INVERT`, `--trend-score-mode NEUTRAL`) for scenarios where high scores underperform.
-- **Score Policy Selection & Production Defaults**: Walk-forward aggregation by scoring knobs (`compute_score_policy_wf_summary`), stability-first selector (`select_best_scoring_defaults`), and enhanced validation mode with dual backtests.
-  - **Outputs**: `score_policy_wf_summary.csv` (aggregated results by scoring config), `chosen_scoring_defaults.json` (selected defaults with reasoning), `validation_scoring_recommendation.txt` (comparison report).
-  - **Monotonicity Check**: `check_score_monotonicity()` in `metrics.py` uses Spearman correlation to detect score inversion issues.
-- **Score-Based Risk Scaling** (Task 19): Scales position sizes based on pattern quality scores. Higher-quality patterns receive larger positions, lower-quality patterns receive smaller positions. Uses a smooth multiplier function: `score_mult = min_mult + (max_mult - min_mult) * (score/100)^alpha`. Default settings: `min_mult=0.60`, `max_mult=1.20`, `alpha=1.0`. Applies to both FORMING and CONFIRMED entries. Includes an absolute cap (`max_risk_fraction_per_trade=0.02`) to prevent excessive risk. No lookahead: only uses pre-entry pattern score.
-- **Portfolio Capital Allocation Engine** (Task 20): Implements signal competition for a finite daily/weekly risk budget. Signals are ranked by allocation_score and scaled proportionally when demand exceeds budget. Key parameters:
-  - `daily_risk_budget` (default 0.04 = 4%): Max total risk per day
-  - `daily_risk_budget_forming` (default 0.015 = 1.5%): Max daily risk for FORMING entries
-  - `allocation_scaling_mode`: PROPORTIONAL (scales all signals down) or HARD_CUTOFF (drops lowest priority)
-  - `min_allocation_scale` (default 0.25): Floor for proportional scaling
-  - `max_signals_per_day`: Optional cap on signals after ranking
-  - Trade output includes: allocation_score, allocation_scale, allocation_rank, allocation_budget_used
-  - No lookahead: uses only pre-entry data for ranking and allocation
-- **Capital Recycling Engine** (Task 21): Implements opportunity-cost exits to free budget for better signals. When a high-quality candidate is budget-blocked, the system recycles (partial or full exit) lower-quality open positions to make room. Key parameters:
-  - `recycle_trigger_mode`: BUDGET_BLOCKED (default) or ALWAYS
-  - `recycle_min_score_gap` (default 0.15): Min score improvement to trigger recycle
-  - `recycle_min_hold_days` (default 10): Min days before position is recyclable
-  - `recycle_exclude_confirmed_winners`: Protect confirmed positions with MFE >= 0.5R
-  - `recycle_action`: PARTIAL (sell fraction) or EXIT (close fully)
-  - `recycle_partial_fraction` (default 0.50): Fraction to sell in partial recycle
-  - Trade output includes: RECYCLE_PARTIAL/RECYCLE_EXIT exit reasons, recycle_triggered_by_symbol, recycle_replaced_by_score
-  - No lookahead: recycling decisions based on prior-close data only
-- **Capital Recycling Stress Tests & Validation** (Task 22): Validates recycling effectiveness under pressure scenarios.
-  - **Stress Modes**: `recycling_stress_mode` = NONE | LOW_BUDGET | HIGH_SIGNAL_DENSITY | BOTH
-  - **LOW_BUDGET**: Reduces daily budget by `recycling_stress_daily_budget_mult` (default 0.50 = 50%) to force budget pressure
-  - **HIGH_SIGNAL_DENSITY**: Disables top_k limits to increase signal congestion
-  - **Effectiveness Metrics**: swap_edge_r (replacement R - recycled R), false_recycle_rate, capital_reuse_efficiency
-  - **Comparison Runner**: `--run-recycling-comparison true` runs OFF/PARTIAL/EXIT variants and generates summary
-  - **Outputs**: `recycling_effectiveness_report.csv`, `recycling_comparison_summary.csv`
-  - **Validation Rejection**: Configs with false_recycle_rate > 40% or avg_swap_edge_r < 0 are flagged
-  - Example: `python main.py --backtest-v2 --recycling-stress-mode BOTH --run-recycling-comparison true`
-- **Capital Recycling ALWAYS Mode Fix** (Task 25): Fixed non-functional recycling engine in ALWAYS mode by:
-  - Correcting score gap guard logic (now allows recycling when `min_score_gap=0` by bypassing check)
-  - Expanding BlockedCandidate tracking to include all constraint-blocked signals (position limits, cluster caps)
-  - Adding constraint re-validation to prevent portfolio cap violations during recycling
-  - Adding `recycling_debug` instrumentation to metrics.json tracking: blocked_signals_total, blocked_by_reason, recycling_candidates_considered, recycling_attempts, recycling_events, recycling_denied_reasons
-  - Verified: PARTIAL mode shows 84 recycling events, EXIT mode shows 87 events
-- **Capital Recycling Quality Gates** (Task 26): Added quality gates to reduce false_recycle_rate and improve avg_swap_edge_r:
-  - **New CLI Flags**:
-    - `--recycle-min-expected-edge-r` (default: 0.15): Victim must be this far underwater (negative R) to be recycled
-    - `--recycle-replace-only-if-improves-score` (default: false): Optional score improvement requirement
-  - **Quality Gates Implemented**:
-    - Gate A: Min hold days (default: 3 days, prevent churning)
-    - Gate B: Score gap requirement (default: 0, disabled in favor of expected-edge-r)
-    - Gate C: Exclude confirmed winners (positions with positive unrealized R)
-    - Gate D: Replace only if improves score (optional, disabled by default)
-    - Gate E: Expected edge (victim must be underwater by at least min_expected_edge_r)
-  - **Instrumentation**: Added `quality_gate_denied_reasons` to recycling_debug tracking: min_hold_days_fail, score_gap_fail, exclude_confirmed_winner_fail, improves_score_fail, expected_edge_fail
-  - **Counter De-duplication**: Fixed double-counting by tracking unique gate failures per candidate
-  - **Guard Sweep Runner**: `python -m scripts.run_recycling_guard_sweep` sweeps gate configs and outputs `recycling_guard_sweep.csv`
-  - **Optimal Settings**: Default settings achieve 0% false recycle rate, +0.165R swap edge with 27 recycling events (significantly exceeds targets of ≤40% false rate and ≥0.00R edge)
-- **Market Regime Filter**: Incorporates a market regime filter with soft-gating using MA-based trend and volatility detection to adjust risk.
-- **Correlation & Cluster Caps**: Implements portfolio-level risk management by limiting positions based on symbol correlation and cluster membership.
-- **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules for "FORMING" patterns.
-- **Portfolio Rules Engine**: Manages position sizing, concurrent position limits, and specific exit rules for different pattern "kinds" (FORMING/CONFIRMED).
-- **Universe Management**: `universe.py` handles NASDAQ symbol caching and liquidity filtering (min price, min dollar volume).
+    - **Run Manifests**: Generates manifests for provenance (command, git commit, package versions).
+    - **Deterministic Runs**: Supports reproducible symbol selection and fixes for floating-point drift, ensuring deterministic trade outputs.
+    - **Price Cache Policies**: Provides flexible price data caching policies (`AUTO`, `READONLY`, `REFRESH`, `OFF`) for reproducible runs, with data normalization and provenance tracking.
+- **Pattern Quality Scoring**: A 0-100 score based on pre-entry data, incorporating symmetry, neckline, separation, breakout strength, volume, and trend context. Includes score inversion fixes and policy selection.
+- **Score-Based Risk Scaling**: Scales position sizes based on pattern quality scores using a smooth multiplier function, with an absolute capital cap.
+- **Portfolio Capital Allocation Engine**: Implements signal competition for a finite daily/weekly risk budget, ranking signals by allocation score and scaling proportionally.
+- **Capital Recycling Engine**: Implements opportunity-cost exits, recycling lower-quality open positions to free budget for higher-quality signals. Includes various trigger modes, quality gates (`min_expected_edge_r`, `replace_only_if_improves_score`), and validation tools for robustness.
+- **Market Regime Filter**: Incorporates MA-based trend and volatility detection to adjust risk.
+- **Portfolio Risk Management**: Implements correlation and cluster caps, position sizing, and concurrent position limits.
+- **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules.
+- **Universe Management**: Handles NASDAQ symbol caching and liquidity filtering.
 
 ### Feature Specifications
-- **Algorithmic Double Bottom Detection**: Identifies "W" patterns with configurable price tolerance, peak height, and separation days.
-- **RSI Divergence Confirmation**: Integrates bullish RSI divergence as a pattern quality factor.
-- **Volume Analysis**: Assesses volume signatures at key pattern points, particularly decreased volume on the second bottom.
-- **Configurable Parameters**: All key detection, backtesting, and portfolio parameters are configurable via command-line arguments.
-- **Output Generation**: Produces CSV outputs for detected patterns, trade blotters, equity curves, and various performance reports.
-- **Alert System**: Designed to alert on confirmed pattern breakouts (implementation details are modular).
+- **Algorithmic Double Bottom Detection**: Identifies "W" patterns with configurable parameters.
+- **RSI Divergence Confirmation**: Integrates bullish RSI divergence.
+- **Volume Analysis**: Assesses volume signatures at key pattern points.
+- **Configurable Parameters**: All key parameters are configurable via command-line arguments.
+- **Output Generation**: Produces CSVs for patterns, trade blotters, equity curves, and performance reports.
 
 ### System Design Choices
-- **Modular Design**: Structured into distinct Python modules (`main.py`, `double_bottom_scanner.py`, `strategy.py`, `backtester.py`, `metrics.py`, `alerts.py`) for clarity and extensibility.
-- **No-Lookahead Principle**: Ensures all trading decisions in the backtester are based solely on information available at that point in time.
-- **Risk-Based Sizing**: Positions are sized based on a defined risk per trade (e.g., a percentage of equity).
-- **Parameter Optimization**: Designed for comprehensive parameter optimization through walk-forward analysis.
+- **Modular Design**: Structured into distinct Python modules for clarity and extensibility.
+- **No-Lookahead Principle**: Ensures all trading decisions are based on available information at the time.
+- **Risk-Based Sizing**: Positions are sized based on defined risk per trade.
+- **Parameter Optimization**: Designed for comprehensive parameter optimization via walk-forward analysis.
 
 ## External Dependencies
 - **yfinance**: For downloading historical stock market data.
@@ -114,5 +49,5 @@ I prefer iterative development, so please propose changes and explain them thoro
 - **scipy**: Specifically `scipy.signal.find_peaks` for peak detection.
 - **matplotlib**: For generating charts and visualizations.
 - **pandas-ta**: For technical indicators like RSI.
-- **tqdm**: For displaying progress bars during long operations.
-- **requests**: For making HTTP requests, likely used in `universe.py` for symbol lists.
+- **tqdm**: For displaying progress bars.
+- **requests**: For making HTTP requests (e.g., for symbol lists).
