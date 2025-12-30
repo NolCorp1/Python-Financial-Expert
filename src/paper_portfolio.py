@@ -207,17 +207,26 @@ def apply_fills(
                     break
             
             if pos_idx is not None:
-                pos = state["open_positions"].pop(pos_idx)
-                proceeds = qty * fill_price
+                pos = state["open_positions"][pos_idx]
+                pos_qty = pos.get("qty", 0)
+                sell_qty = min(qty, pos_qty)
+                proceeds = sell_qty * fill_price
                 state["cash"] += proceeds
                 
                 closed = pos.copy()
                 closed["exit_date"] = date
                 closed["exit_price"] = fill_price
-                closed["realized_pnl"] = (fill_price - pos["entry_price"]) * qty
+                closed["qty"] = sell_qty
+                closed["realized_pnl"] = (fill_price - pos["entry_price"]) * sell_qty
                 closed["realized_r"] = compute_realized_r(pos, fill_price)
                 closed["exit_reason"] = order_info.get("reason", "MANUAL")
                 state["closed_positions"].append(closed)
+                
+                remaining_qty = pos_qty - sell_qty
+                if remaining_qty <= 0:
+                    state["open_positions"].pop(pos_idx)
+                else:
+                    state["open_positions"][pos_idx]["qty"] = remaining_qty
     
     return state
 

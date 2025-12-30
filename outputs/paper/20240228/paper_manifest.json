@@ -1,8 +1,8 @@
 {
-  "run_id": "paper_2024-02-28_211654",
+  "run_id": "paper_2024-02-28_211835",
   "date": "2024-02-28",
-  "git_commit": "4be11b0b",
-  "generated_at": "2025-12-30T21:16:54.896656",
+  "git_commit": "a527ed24",
+  "generated_at": "2025-12-30T21:18:35.366545",
   "cli_args": {
     "universe": "demo",
     "max_stocks": 20,
@@ -23,7 +23,7 @@
   },
   "hashes": {
     "orders_csv": "4ecef4b120518767",
-    "report_md": "11b3d35ce3a3401b",
-    "paper_manifest": "1ab4f55151aec7e3"
+    "report_md": "362deee0ddcc5df6",
+    "paper_manifest": "2f6a527f42590083"
   }
 }
