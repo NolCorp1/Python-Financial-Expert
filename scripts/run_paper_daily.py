@@ -70,12 +70,12 @@ def run_scanner_pipeline(
     date: str,
     args: argparse.Namespace,
     state: Dict[str, Any],
-) -> Tuple[List[Dict[str, Any]], Dict[str, pd.DataFrame], Dict[str, Any]]:
+) -> Tuple[List[Any], Dict[str, pd.DataFrame], Dict[str, Any], Dict[str, Any]]:
     """
     Run the pattern scanner and signal generation pipeline for a single date.
     
     Returns:
-        Tuple of (signals, price_data, recycling_stats)
+        Tuple of (allocated_candidates, price_data, recycling_stats, signal_intake_stats)
     """
     import random as _random
     from double_bottom_scanner import DEFAULT_CONFIG
@@ -186,19 +186,41 @@ def run_scanner_pipeline(
     available_total = args.max_positions_total - counts["total"]
     available_forming = args.max_positions_forming - counts["forming"]
     
+    signal_intake_stats = {
+        "total_generated": len(daily_signals),
+        "skipped": {},
+        "accepted": 0,
+        "forming_accepted": 0,
+        "confirmed_accepted": 0,
+    }
+    
+    skipped_already_open = 0
+    skipped_position_cap = 0
+    skipped_forming_cap = 0
+    
     filtered_signals = []
     for sig in daily_signals:
         if sig.symbol in open_symbols:
+            skipped_already_open += 1
             continue
         if available_total <= 0:
-            break
+            skipped_position_cap += 1
+            continue
         stage = getattr(sig, 'entry_kind', 'FORMING')
         if stage == "FORMING" and available_forming <= 0:
+            skipped_forming_cap += 1
             continue
         filtered_signals.append(sig)
         available_total -= 1
         if stage == "FORMING":
             available_forming -= 1
+    
+    if skipped_already_open > 0:
+        signal_intake_stats["skipped"]["already_open"] = skipped_already_open
+    if skipped_position_cap > 0:
+        signal_intake_stats["skipped"]["position_cap"] = skipped_position_cap
+    if skipped_forming_cap > 0:
+        signal_intake_stats["skipped"]["forming_cap"] = skipped_forming_cap
     
     candidates = []
     target_date = pd.Timestamp(date)
@@ -241,13 +263,24 @@ def run_scanner_pipeline(
     else:
         allocated = []
     
+    for cand in allocated:
+        stage = getattr(cand.signal, 'entry_kind', 'FORMING')
+        signal_intake_stats["accepted"] += 1
+        if stage == "FORMING":
+            signal_intake_stats["forming_accepted"] += 1
+        else:
+            signal_intake_stats["confirmed_accepted"] += 1
+    
     recycling_stats = {
         "recycle_events_count": 0,
         "avg_swap_edge_r": 0.0,
         "false_recycle_rate": 0.0,
+        "capital_freed": 0.0,
+        "blocked_attempts": 0,
+        "accepted_attempts": 0,
     }
     
-    return allocated, price_data, recycling_stats
+    return allocated, price_data, recycling_stats, signal_intake_stats
 
 
 def generate_orders(
@@ -388,13 +421,23 @@ def generate_report(
     recycling_stats: Dict[str, Any],
     daily_pnl: float,
     output_dir: Path,
+    signal_intake_stats: Optional[Dict[str, Any]] = None,
+    starting_equity: Optional[float] = None,
 ) -> Path:
-    """Generate daily report markdown file."""
+    """Generate daily report markdown file with comprehensive attribution sections."""
     output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / "report.md"
     
     stats = compute_portfolio_stats(state)
     counts = get_position_counts(state)
+    
+    if starting_equity is None:
+        starting_equity = stats['equity'] - daily_pnl
+    
+    daily_pnl_pct = (daily_pnl / starting_equity * 100) if starting_equity > 0 else 0.0
+    cash = stats['cash']
+    positions_value = stats['positions_value']
+    invested_pct = (positions_value / stats['equity'] * 100) if stats['equity'] > 0 else 0.0
     
     lines = [
         f"# Paper Trading Daily Report",
@@ -402,26 +445,64 @@ def generate_report(
         f"**Date:** {date}",
         f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"",
-        f"## Portfolio Summary",
+        f"## 1. Portfolio Snapshot",
         f"",
         f"| Metric | Value |",
         f"|--------|-------|",
-        f"| Equity | ${stats['equity']:,.2f} |",
-        f"| Cash | ${stats['cash']:,.2f} |",
-        f"| Positions Value | ${stats['positions_value']:,.2f} |",
-        f"| Daily PnL | ${daily_pnl:+,.2f} |",
+        f"| Starting Equity | ${starting_equity:,.2f} |",
+        f"| Ending Equity | ${stats['equity']:,.2f} |",
+        f"| Daily PnL ($) | ${daily_pnl:+,.2f} |",
+        f"| Daily PnL (%) | {daily_pnl_pct:+.2f}% |",
+        f"| Cash | ${cash:,.2f} ({100 - invested_pct:.1f}%) |",
+        f"| Invested Capital | ${positions_value:,.2f} ({invested_pct:.1f}%) |",
+        f"| Open Positions | {counts['total']} |",
+        f"| FORMING | {counts['forming']} |",
+        f"| CONFIRMED | {counts['confirmed']} |",
         f"| Inception Return | {stats['inception_return_pct']:+.2f}% |",
         f"| Drawdown from Peak | {stats['drawdown_from_peak_pct']:.2f}% |",
         f"",
-        f"## Position Counts",
-        f"",
-        f"| Stage | Count |",
-        f"|-------|-------|",
-        f"| Total Open | {counts['total']} |",
-        f"| Forming | {counts['forming']} |",
-        f"| Confirmed | {counts['confirmed']} |",
-        f"",
     ]
+    
+    open_positions = state.get("open_positions", [])
+    if open_positions:
+        lines.extend([
+            f"## 2. Exposure Summary",
+            f"",
+            f"### Exposure by Symbol",
+            f"",
+            f"| Symbol | Stage | Value | % of Equity |",
+            f"|--------|-------|-------|-------------|",
+        ])
+        
+        exposures = []
+        for pos in open_positions:
+            pos_value = pos.get("current_price", pos.get("entry_price", 0)) * pos.get("qty", 0)
+            pct_equity = (pos_value / stats['equity'] * 100) if stats['equity'] > 0 else 0.0
+            exposures.append({
+                "symbol": pos["symbol"],
+                "stage": pos.get("stage", "?"),
+                "value": pos_value,
+                "pct": pct_equity
+            })
+        
+        exposures = sorted(exposures, key=lambda x: -x["value"])
+        largest_pct = exposures[0]["pct"] if exposures else 0.0
+        
+        for exp in exposures:
+            lines.append(f"| {exp['symbol']} | {exp['stage']} | ${exp['value']:,.2f} | {exp['pct']:.1f}% |")
+        
+        lines.extend([
+            f"",
+            f"**Largest Single Position:** {largest_pct:.1f}% of equity",
+            f"",
+        ])
+    else:
+        lines.extend([
+            f"## 2. Exposure Summary",
+            f"",
+            f"No open positions.",
+            f"",
+        ])
     
     if orders:
         lines.extend([
@@ -470,15 +551,69 @@ def generate_report(
             )
         lines.append("")
     
-    if recycling_stats.get("recycle_events_count", 0) > 0:
+    lines.extend([
+        f"## 3. Recycling Summary",
+        f"",
+    ])
+    
+    recycle_count = recycling_stats.get("recycle_events_count", 0)
+    if recycle_count > 0:
+        capital_freed = recycling_stats.get("capital_freed", 0.0)
+        capital_freed_pct = (capital_freed / stats['equity'] * 100) if stats['equity'] > 0 else 0.0
+        blocked = recycling_stats.get("blocked_attempts", 0)
+        accepted = recycling_stats.get("accepted_attempts", recycle_count)
+        
         lines.extend([
-            f"## Recycling Summary",
-            f"",
             f"| Metric | Value |",
             f"|--------|-------|",
-            f"| Recycle Events | {recycling_stats.get('recycle_events_count', 0)} |",
-            f"| Avg Swap Edge (R) | {recycling_stats.get('avg_swap_edge_r', 0):+.3f} |",
+            f"| Recycle Events Today | {recycle_count} |",
+            f"| Capital Freed ($) | ${capital_freed:,.2f} |",
+            f"| Capital Freed (%) | {capital_freed_pct:.2f}% |",
+            f"| Avg Swap Edge (R) | {recycling_stats.get('avg_swap_edge_r', 0):+.3f}R |",
+            f"| Blocked Attempts | {blocked} |",
+            f"| Accepted Attempts | {accepted} |",
             f"| False Recycle Rate | {recycling_stats.get('false_recycle_rate', 0):.1f}% |",
+            f"",
+        ])
+    else:
+        lines.extend([
+            f"No recycling events today.",
+            f"",
+        ])
+    
+    lines.extend([
+        f"## 4. Signal Intake Summary",
+        f"",
+    ])
+    
+    if signal_intake_stats:
+        total_gen = signal_intake_stats.get("total_generated", 0)
+        skipped = signal_intake_stats.get("skipped", {})
+        accepted = signal_intake_stats.get("accepted", 0)
+        forming_accepted = signal_intake_stats.get("forming_accepted", 0)
+        confirmed_accepted = signal_intake_stats.get("confirmed_accepted", 0)
+        
+        lines.extend([
+            f"| Metric | Value |",
+            f"|--------|-------|",
+            f"| Total Signals Generated | {total_gen} |",
+        ])
+        
+        if skipped:
+            for reason, count in sorted(skipped.items()):
+                lines.append(f"| Skipped ({reason}) | {count} |")
+        
+        lines.extend([
+            f"| Signals Accepted | {accepted} |",
+            f"| FORMING Accepted | {forming_accepted} |",
+            f"| CONFIRMED Accepted | {confirmed_accepted} |",
+            f"",
+        ])
+    else:
+        lines.extend([
+            f"| Metric | Value |",
+            f"|--------|-------|",
+            f"| Signals Accepted | {len(orders)} |",
             f"",
         ])
     
@@ -688,10 +823,12 @@ def main():
         return 0
     
     print("\n[2/6] Running scanner pipeline...")
-    allocated, price_data, recycling_stats = run_scanner_pipeline(
+    allocated, price_data, recycling_stats, signal_intake_stats = run_scanner_pipeline(
         args.date, args, state
     )
     print(f"  Allocated signals: {len(allocated)}")
+    
+    starting_equity = state.get("equity", state.get("initial_capital", 100000.0))
     
     print("\n[3/6] Marking portfolio to market...")
     prices_by_symbol = {}
@@ -743,7 +880,9 @@ def main():
     
     if args.export_report.lower() == "true":
         report_path = generate_report(
-            args.date, state, orders, recycling_stats, daily_pnl, output_dir
+            args.date, state, orders, recycling_stats, daily_pnl, output_dir,
+            signal_intake_stats=signal_intake_stats,
+            starting_equity=starting_equity,
         )
         print(f"  Report: {report_path}")
     else:
