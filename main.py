@@ -621,9 +621,9 @@ def main():
     parser.add_argument('--recycle-trigger-mode', type=str, default='BUDGET_BLOCKED',
                        choices=['BUDGET_BLOCKED', 'ALWAYS'],
                        help='When to trigger recycling: BUDGET_BLOCKED (when candidate blocked) or ALWAYS')
-    parser.add_argument('--recycle-min-score-gap', type=float, default=0.15,
-                       help='Min (new_score/old_score - 1.0) to trigger recycling')
-    parser.add_argument('--recycle-min-hold-days', type=int, default=10,
+    parser.add_argument('--recycle-min-score-gap', type=float, default=0.0,
+                       help='Min score gap in percentage points (0 = disabled, use expected-edge-r instead)')
+    parser.add_argument('--recycle-min-hold-days', type=int, default=3,
                        help='Min days held before position eligible for recycling')
     parser.add_argument('--recycle-only-forming', type=str, default='false',
                        choices=['true', 'false'],
@@ -645,9 +645,9 @@ def main():
                        help='Days with no progress before eligible for recycle')
     parser.add_argument('--recycle-no-progress-r', type=float, default=0.25,
                        help='Min R progress to avoid recycle eligibility')
-    parser.add_argument('--recycle-min-expected-edge-r', type=float, default=0.00,
-                       help='Min expected edge (R) for replacement candidate')
-    parser.add_argument('--recycle-replace-only-if-improves-score', type=str, default='true',
+    parser.add_argument('--recycle-min-expected-edge-r', type=float, default=0.15,
+                       help='Min expected edge: victim must be this far underwater (negative R) to be recycled')
+    parser.add_argument('--recycle-replace-only-if-improves-score', type=str, default='false',
                        choices=['true', 'false'],
                        help='Require candidate score > victim score to recycle')
     

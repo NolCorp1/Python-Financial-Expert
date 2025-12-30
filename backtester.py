@@ -1294,6 +1294,9 @@ def run_backtest(
                 recycling_debug['recycling_attempts'] += 1
                 recycling_debug['total_candidates_before_gates'] = recycling_debug.get('total_candidates_before_gates', 0) + len(open_positions)
                 
+                # Track gate failures per candidate to avoid double-counting
+                candidate_gate_fails = set()
+                
                 # Find recyclable positions (worst first based on recycle score)
                 recyclable = []
                 for sym in sorted(open_positions.keys()):
@@ -1301,27 +1304,46 @@ def run_backtest(
                     
                     # Gate A: Minimum hold days
                     if cfg.recycle_min_hold_days > 0 and pos.bars_held < cfg.recycle_min_hold_days:
-                        recycling_debug['quality_gate_denied_reasons']['min_hold_days_fail'] = \
-                            recycling_debug['quality_gate_denied_reasons'].get('min_hold_days_fail', 0) + 1
+                        gate_fail_key = f'{sym}_min_hold_days'
+                        if gate_fail_key not in candidate_gate_fails:
+                            candidate_gate_fails.add(gate_fail_key)
+                            recycling_debug['quality_gate_denied_reasons']['min_hold_days_fail'] = \
+                                recycling_debug['quality_gate_denied_reasons'].get('min_hold_days_fail', 0) + 1
                         continue
                     
                     # Only FORMING filter
                     if cfg.recycle_only_forming and pos.entry_kind != "FORMING":
                         continue
                     
+                    # Compute unrealized R for this position
+                    current_price = recycle_prices.get(sym)
+                    initial_risk = pos.entry_fill - pos.original_stop_loss
+                    if current_price is not None and initial_risk > 0:
+                        unrealized_r = (current_price - pos.entry_fill) / initial_risk
+                    else:
+                        unrealized_r = pos.mfe_r  # fallback to MFE
+                    
                     # Gate C: Exclude confirmed winners (using current unrealized R)
                     if cfg.recycle_exclude_confirmed_winners:
-                        if pos.entry_kind == "CONFIRMED":
-                            current_price = recycle_prices.get(sym)
-                            initial_risk = pos.entry_fill - pos.original_stop_loss
-                            if current_price is not None and initial_risk > 0:
-                                unrealized_r = (current_price - pos.entry_fill) / initial_risk
-                            else:
-                                unrealized_r = pos.mfe_r  # fallback to MFE
-                            if unrealized_r > 0:
+                        if pos.entry_kind == "CONFIRMED" and unrealized_r > 0:
+                            gate_fail_key = f'{sym}_exclude_confirmed_winner'
+                            if gate_fail_key not in candidate_gate_fails:
+                                candidate_gate_fails.add(gate_fail_key)
                                 recycling_debug['quality_gate_denied_reasons']['exclude_confirmed_winner_fail'] = \
                                     recycling_debug['quality_gate_denied_reasons'].get('exclude_confirmed_winner_fail', 0) + 1
-                                continue
+                            continue
+                    
+                    # Gate E: Min expected edge (victim must be sufficiently underwater)
+                    # recycle_min_expected_edge_r specifies how underwater (negative R) victim must be
+                    # Include equality: victim at exactly -threshold passes the gate
+                    if cfg.recycle_min_expected_edge_r > 0:
+                        if unrealized_r > -cfg.recycle_min_expected_edge_r:  # gt not ge: -0.15R passes when threshold=0.15
+                            gate_fail_key = f'{sym}_expected_edge'
+                            if gate_fail_key not in candidate_gate_fails:
+                                candidate_gate_fails.add(gate_fail_key)
+                                recycling_debug['quality_gate_denied_reasons']['expected_edge_fail'] = \
+                                    recycling_debug['quality_gate_denied_reasons'].get('expected_edge_fail', 0) + 1
+                            continue
                     
                     if sym not in recycle_prices:
                         continue
@@ -1331,17 +1353,23 @@ def run_backtest(
                     # Gate D: Replace only if improves score
                     if cfg.recycle_replace_only_if_improves_score:
                         if new_score <= pos_recycle_score:
-                            recycling_debug['quality_gate_denied_reasons']['improves_score_fail'] = \
-                                recycling_debug['quality_gate_denied_reasons'].get('improves_score_fail', 0) + 1
+                            gate_fail_key = f'{sym}_improves_score'
+                            if gate_fail_key not in candidate_gate_fails:
+                                candidate_gate_fails.add(gate_fail_key)
+                                recycling_debug['quality_gate_denied_reasons']['improves_score_fail'] = \
+                                    recycling_debug['quality_gate_denied_reasons'].get('improves_score_fail', 0) + 1
                             continue
                     
-                    # Gate A: Score gap requirement (absolute difference, not ratio)
+                    # Gate B: Score gap requirement (absolute difference, not ratio)
                     # recycle_min_score_gap is interpreted as percentage points (6 = 6% absolute difference)
                     score_gap_abs = (new_score - pos_recycle_score) * 100  # Convert to percentage points
                     
                     if cfg.recycle_min_score_gap > 0 and score_gap_abs < cfg.recycle_min_score_gap:
-                        recycling_debug['quality_gate_denied_reasons']['score_gap_fail'] = \
-                            recycling_debug['quality_gate_denied_reasons'].get('score_gap_fail', 0) + 1
+                        gate_fail_key = f'{sym}_score_gap'
+                        if gate_fail_key not in candidate_gate_fails:
+                            candidate_gate_fails.add(gate_fail_key)
+                            recycling_debug['quality_gate_denied_reasons']['score_gap_fail'] = \
+                                recycling_debug['quality_gate_denied_reasons'].get('score_gap_fail', 0) + 1
                         continue
                     
                     recyclable.append((sym, pos, pos_recycle_score))
