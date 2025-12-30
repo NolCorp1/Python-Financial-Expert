@@ -68,6 +68,12 @@ I prefer iterative development, so please propose changes and explain them thoro
   - **Outputs**: `recycling_effectiveness_report.csv`, `recycling_comparison_summary.csv`
   - **Validation Rejection**: Configs with false_recycle_rate > 40% or avg_swap_edge_r < 0 are flagged
   - Example: `python main.py --backtest-v2 --recycling-stress-mode BOTH --run-recycling-comparison true`
+- **Capital Recycling ALWAYS Mode Fix** (Task 25): Fixed non-functional recycling engine in ALWAYS mode by:
+  - Correcting score gap guard logic (now allows recycling when `min_score_gap=0` by bypassing check)
+  - Expanding BlockedCandidate tracking to include all constraint-blocked signals (position limits, cluster caps)
+  - Adding constraint re-validation to prevent portfolio cap violations during recycling
+  - Adding `recycling_debug` instrumentation to metrics.json tracking: blocked_signals_total, blocked_by_reason, recycling_candidates_considered, recycling_attempts, recycling_events, recycling_denied_reasons
+  - Verified: PARTIAL mode shows 84 recycling events, EXIT mode shows 87 events
 - **Market Regime Filter**: Incorporates a market regime filter with soft-gating using MA-based trend and volatility detection to adjust risk.
 - **Correlation & Cluster Caps**: Implements portfolio-level risk management by limiting positions based on symbol correlation and cluster membership.
 - **Exit Strategy**: Includes partial take profit, ATR-based trailing stops, and no-progress rules for "FORMING" patterns.
