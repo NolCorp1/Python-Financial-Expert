@@ -688,6 +688,16 @@ def run_backtest(
     recycle_exit_count = 0
     recycle_freed_budget = 0.0
     
+    # Recycling debug instrumentation (Task 25)
+    recycling_debug = {
+        'blocked_signals_total': 0,
+        'blocked_by_reason': {},
+        'recycling_candidates_considered': 0,
+        'recycling_attempts': 0,
+        'recycling_events': 0,
+        'recycling_denied_reasons': {},
+    }
+    
     corr_matrix = pd.DataFrame()
     clusters: Dict[str, int] = {}
     
@@ -1258,6 +1268,12 @@ def run_backtest(
                 # BUDGET_BLOCKED mode: only process budget-blocked candidates
                 blocked = budget_blocked
             
+            # Track blocked signals for debug (Task 25)
+            recycling_debug['blocked_signals_total'] += len(blocked)
+            for cand in constraint_blocked_candidates:
+                reason = getattr(cand, 'block_reason', 'unknown')
+                recycling_debug['blocked_by_reason'][reason] = recycling_debug['blocked_by_reason'].get(reason, 0) + 1
+            
             # Get today's open price for recycling (deterministic order)
             recycle_prices = {}
             for sym in sorted(open_positions.keys()):
@@ -1269,6 +1285,7 @@ def run_backtest(
             
             for blocked_cand in blocked:
                 new_score = blocked_cand.allocation_score
+                recycling_debug['recycling_attempts'] += 1
                 
                 # Find recyclable positions (worst first based on recycle score)
                 recyclable = []
@@ -1293,11 +1310,12 @@ def run_backtest(
                     else:
                         score_gap = 999.0
                     
-                    if score_gap >= cfg.recycle_min_score_gap:
+                    if cfg.recycle_min_score_gap <= 0 or score_gap >= cfg.recycle_min_score_gap:
                         recyclable.append((sym, pos, pos_recycle_score))
                 
                 # Sort by recycle score (worst = lowest first), with stable tie-break
                 recyclable.sort(key=lambda x: (x[2], x[0]))
+                recycling_debug['recycling_candidates_considered'] += len(recyclable)
                 
                 # Try to free enough budget for this candidate
                 freed_total = 0.0
@@ -1325,6 +1343,7 @@ def run_backtest(
                         freed_total += pos_budget
                         recycle_freed_budget += pos_budget
                         recycle_exit_count += 1
+                        recycling_debug['recycling_events'] += 1
                         
                         del open_positions[sym]
                     else:
@@ -1340,10 +1359,19 @@ def run_backtest(
                             freed_total += freed_budget
                             recycle_freed_budget += freed_budget
                             recycle_partial_count += 1
+                            recycling_debug['recycling_events'] += 1
                             
                             # If position fully emptied, remove it
                             if pos.shares_remaining <= 0:
                                 del open_positions[sym]
+                
+                # Track when no recyclable positions found or insufficient budget freed
+                if len(recyclable) == 0:
+                    recycling_debug['recycling_denied_reasons']['no_recyclable_positions'] = \
+                        recycling_debug['recycling_denied_reasons'].get('no_recyclable_positions', 0) + 1
+                elif freed_total < needed_budget * 0.5:
+                    recycling_debug['recycling_denied_reasons']['insufficient_budget_freed'] = \
+                        recycling_debug['recycling_denied_reasons'].get('insufficient_budget_freed', 0) + 1
                 
                 # If we freed enough, verify constraints before adding candidate back
                 if freed_total >= needed_budget * 0.5:  # At least 50% freed
@@ -1362,10 +1390,16 @@ def run_backtest(
                         
                         if block_reason == 'max_positions_total' and current_total >= cfg.max_positions_total:
                             can_proceed = False
+                            recycling_debug['recycling_denied_reasons']['constraint_recheck_max_positions_total'] = \
+                                recycling_debug['recycling_denied_reasons'].get('constraint_recheck_max_positions_total', 0) + 1
                         elif block_reason == 'max_positions_forming' and blocked_cand.signal.entry_kind == "FORMING" and current_forming >= cfg.max_positions_forming:
                             can_proceed = False
+                            recycling_debug['recycling_denied_reasons']['constraint_recheck_max_positions_forming'] = \
+                                recycling_debug['recycling_denied_reasons'].get('constraint_recheck_max_positions_forming', 0) + 1
                         elif block_reason == 'max_positions_confirmed' and blocked_cand.signal.entry_kind == "CONFIRMED" and current_confirmed >= cfg.max_positions_confirmed:
                             can_proceed = False
+                            recycling_debug['recycling_denied_reasons']['constraint_recheck_max_positions_confirmed'] = \
+                                recycling_debug['recycling_denied_reasons'].get('constraint_recheck_max_positions_confirmed', 0) + 1
                         elif block_reason == 'corr_cap':
                             # Re-check correlation cap with current open positions AND pending candidates
                             max_corr_found = 0.0
@@ -1391,6 +1425,8 @@ def run_backtest(
                                             pass
                                 if max_corr_found >= cfg.max_corr_to_existing:
                                     can_proceed = False
+                                    recycling_debug['recycling_denied_reasons']['constraint_recheck_corr_cap'] = \
+                                        recycling_debug['recycling_denied_reasons'].get('constraint_recheck_corr_cap', 0) + 1
                         elif block_reason == 'cluster_cap':
                             # Re-check cluster cap with current open positions AND pending candidates
                             if cfg.use_cluster_caps and cand_sym in clusters:
@@ -1405,6 +1441,8 @@ def run_backtest(
                                 )
                                 if (cluster_count_open + cluster_count_pending) >= cfg.max_positions_per_cluster:
                                     can_proceed = False
+                                    recycling_debug['recycling_denied_reasons']['constraint_recheck_cluster_cap'] = \
+                                        recycling_debug['recycling_denied_reasons'].get('constraint_recheck_cluster_cap', 0) + 1
                     
                     if can_proceed:
                         blocked_cand.allocation_scale = min(1.0, freed_total / blocked_cand.risk_fraction)
@@ -1595,6 +1633,7 @@ def run_backtest(
             'recycle_partial_count': recycle_partial_count,
             'recycle_exit_count': recycle_exit_count,
             'recycle_freed_budget': recycle_freed_budget,
+            'recycling_debug': recycling_debug,
         }
         return trades_df, equity_df, diagnostics
     

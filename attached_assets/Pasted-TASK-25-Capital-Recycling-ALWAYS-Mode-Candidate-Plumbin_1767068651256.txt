@@ -1,0 +1,188 @@
+TASK 25 — Capital Recycling ALWAYS Mode: Candidate Plumbing, Guard Fixes, and Instrumentation
+
+ROLE
+You are an elite quantitative trading systems engineer working on a near-production algorithmic trading engine.
+You must reason at the portfolio and capital-efficiency level.
+Assume all prior tasks (Tasks 1–24) are complete and correct unless explicitly stated.
+
+OBJECTIVE
+Capital recycling in ALWAYS mode is currently non-functional.
+Despite many signals being blocked by hard constraints (max positions, forming caps, cluster caps, correlation caps),
+the recycling engine never fires and reports zero recycling events.
+
+Your task is to:
+1) Correctly capture blocked signals as recycling candidates
+2) Fix any guard logic that silently prevents recycling
+3) Ensure recycling events are recorded and surfaced in metrics
+4) Add minimal but sufficient instrumentation so this cannot fail silently again
+
+The end result must produce non-zero recycling events when recycling is enabled in ALWAYS mode.
+
+DO NOT:
+- Add new indicators or alpha logic
+- Break no-lookahead guarantees
+- Reduce determinism
+- Remove existing safeguards (only fix logic errors)
+
+REPRO COMMAND (MUST TRIGGER RECYCLING AFTER FIX)
+Run this exact command after implementation:
+
+python main.py --backtest-v2 --universe demo --max-stocks 20 --symbols-seed 123 --quiet \
+  --price-cache-policy READONLY \
+  --daily-risk-budget 0.01 --daily-risk-budget-forming 0.003 \
+  --max-positions-total 4 --max-positions-forming 2 \
+  --use-capital-recycling true \
+  --recycle-trigger-mode ALWAYS \
+  --recycle-min-score-gap 0 \
+  --recycle-min-hold-days 0 \
+  --recycle-no-progress-days 0 \
+  --recycle-no-progress-r 999 \
+  --recycle-exclude-confirmed-winners false \
+  --run-recycling-comparison true
+
+Currently, this run shows many constraint skips but zero recycling events.
+That must be fixed.
+
+============================================================
+PART A — Capture Constraint-Blocked Signals (Missing Plumbing)
+============================================================
+
+Locate all places in backtester.py where trade candidates are skipped due to hard constraints, including but not limited to:
+- Max total positions
+- Max FORMING positions
+- Cluster caps
+- Correlation caps
+- Symbol already open
+
+Currently these skips only increment skip counters and discard the candidate.
+This is incorrect for ALWAYS recycling mode.
+
+Implement a blocked signal accumulator:
+
+- Initialize `blocked_signals = []` at the start of each trading day
+- Whenever a candidate is skipped due to a HARD constraint, append a structured record:
+
+{
+    "date": current_date,
+    "symbol": candidate.symbol,
+    "score": candidate.score,
+    "stage": candidate.stage,  # FORMING or CONFIRMED
+    "reason": "<CONSTRAINT_REASON>",
+    "risk_needed": candidate.risk_budget,
+    "meta": {
+        "cluster_id": candidate.cluster_id (if available)
+    }
+}
+
+This must be done for ALL non-budget constraint skips.
+
+============================================================
+PART B — Feed Blocked Signals Into Recycling Engine
+============================================================
+
+Modify the recycling invocation logic:
+
+- If recycle-trigger-mode == ALWAYS:
+    recycling_candidates = blocked_signals
+- If recycle-trigger-mode == BUDGET_BLOCKED:
+    recycling_candidates = budget_blocked_signals only
+
+Ensure the recycling function receives these candidates.
+If function signatures must be updated, do so.
+
+============================================================
+PART C — Fix Guard Logic That Silently Blocks Recycling
+============================================================
+
+Audit and correct the following common failure modes:
+
+1) Score gap guard
+If recycle-min-score-gap == 0, recycling must NOT be blocked.
+Ensure comparisons use:
+    gap < min_gap   (NOT <=)
+
+2) No-progress guards
+If recycle-no-progress-days == 0, disable that guard entirely.
+If recycle-no-progress-r is very large (e.g. 999), it must not suppress recycling.
+Ensure logic correctly interprets these values as disabling conditions.
+
+3) Constraint re-validation order
+When testing whether a recycled replacement is allowed:
+- First simulate removing the position being recycled
+- Then validate constraints against:
+    (open_positions - removed_position) + new_candidate
+
+Do NOT validate against the original open set before removal.
+
+============================================================
+PART D — Ensure Recycling Events Are Recorded
+============================================================
+
+When a recycling action actually occurs (PARTIAL or EXIT):
+
+- Increment a recycling event counter
+- Record a swap edge entry including:
+    date
+    recycled_symbol
+    new_symbol
+    recycle_action (PARTIAL or EXIT)
+    old_score
+    new_score
+    swap_edge_r
+
+Ensure metrics.json reflects:
+- recycle_events_count > 0
+- avg_swap_edge_r populated when events occur
+- false_recycle_rate computed correctly
+
+============================================================
+PART E — Add Mandatory Recycling Debug Instrumentation
+============================================================
+
+Add a recycling_debug section to metrics.json with at least:
+
+{
+    "blocked_signals_total": int,
+    "blocked_by_reason": {reason: count},
+    "recycling_candidates_considered": int,
+    "recycling_attempts": int,
+    "recycling_events": int,
+    "recycling_denied_reasons": {reason: count}
+}
+
+This must be written on every run (cheap and deterministic).
+Optional: gate verbose console logging behind --debug-recycling.
+
+============================================================
+ACCEPTANCE CRITERIA (ALL REQUIRED)
+============================================================
+
+1) Running the REPRO COMMAND produces:
+   - recycling_effectiveness.recycle_events_count > 0
+
+2) outputs/recycling_comparison_summary.csv shows:
+   - OFF variant: recycling_events == 0
+   - PARTIAL and/or EXIT variant: recycling_events > 0
+
+3) metrics.json includes recycling_debug with:
+   - blocked_signals_total > 0
+   - recycling_candidates_considered > 0
+
+4) Determinism remains intact when using:
+   --price-cache-policy READONLY
+
+============================================================
+DELIVERABLE
+============================================================
+
+- Implement fixes directly in backtester.py and any required helpers
+- Do NOT change public CLI semantics
+- Do NOT introduce lookahead
+- Commit changes cleanly
+
+When complete, briefly summarize:
+- Root cause(s) found
+- Exact fix applied
+- Confirmation that acceptance criteria pass
+
+END TASK 25

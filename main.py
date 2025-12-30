@@ -1213,7 +1213,7 @@ def main():
             print(f"Stress test: {cfg.recycling_stress_mode} | budget_mult={cfg.recycling_stress_daily_budget_mult:.2f} | "
                   f"disable_topk={cfg.recycling_stress_disable_topk}")
         
-        trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)
+        trades_df, equity_df, diagnostics = run_backtest_v2(signals_by_symbol, price_data, cfg, return_diagnostics=True)
         
         os.makedirs('outputs', exist_ok=True)
         
@@ -1292,6 +1292,7 @@ def main():
             for key, val in split_metrics.items():
                 serializable_metrics[key] = {k: (v if not isinstance(v, float) or not (v != v) else None) for k, v in val.items()}
             serializable_metrics['recycling_effectiveness'] = recycling_eff
+            serializable_metrics['recycling_debug'] = diagnostics.get('recycling_debug', {})
             json.dump(serializable_metrics, f, indent=2, default=str)
         
         print("\nOutputs saved to:")
