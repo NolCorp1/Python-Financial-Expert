@@ -1,0 +1,20 @@
+# Symbols for run: 20251230_003835_baf198fc
+# Generated: 2025-12-30T00:38:40.653396
+# Mode: backtest
+# Count: 15
+
+AAPL
+ADBE
+AMAT
+AVGO
+CRM
+GOOGL
+INTC
+INTU
+META
+MSFT
+MU
+NVDA
+PYPL
+TSLA
+TXN

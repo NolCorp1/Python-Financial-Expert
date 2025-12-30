@@ -134,6 +134,11 @@ def download_stock_data(symbol: str, years: int = 3) -> Optional[pd.DataFrame]:
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
         df = df.dropna()
         
+        # Round price data to ensure determinism across yfinance API calls
+        for col in ['Open', 'High', 'Low', 'Close']:
+            df[col] = df[col].round(2)
+        df['Volume'] = df['Volume'].astype(int)
+        
         return df
         
     except Exception as e:

@@ -1,0 +1,15 @@
+# Symbols for run: 20251230_005406_12d35b3e
+# Generated: 2025-12-30T00:54:10.827978
+# Mode: backtest
+# Count: 10
+
+AAPL
+ADBE
+AMAT
+AMD
+CSCO
+GOOGL
+INTU
+META
+PYPL
+QCOM

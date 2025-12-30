@@ -692,10 +692,15 @@ def run_backtest(
     clusters: Dict[str, int] = {}
     
     all_signals = []
-    for sym, sigs in signals_by_symbol.items():
-        for sig in sigs:
+    for sym in sorted(signals_by_symbol.keys()):  # Deterministic symbol order
+        for sig in signals_by_symbol[sym]:
             all_signals.append(sig)
-    all_signals.sort(key=lambda s: s.entry_date)
+    # Sort by date with stable tie-break: (date, kind_rank, -score, symbol, pattern_id)
+    def signal_sort_key(s):
+        kind_rank = 0 if s.entry_kind == "CONFIRMED" else 1
+        score = s.meta.get('pattern_score', 0) if s.meta else 0
+        return (s.entry_date, kind_rank, -score, s.symbol, str(s.pattern_id))
+    all_signals.sort(key=signal_sort_key)
     
     if cfg.use_correlation_caps or cfg.use_cluster_caps:
         if all_signals and len(returns_df) > 0:
@@ -727,11 +732,11 @@ def run_backtest(
         """Helper to create trade record and update cash."""
         nonlocal cash
         exit_commission = cfg.commission_per_trade
-        proceeds = exit_price * pos.shares_remaining - exit_commission
-        cash += proceeds
+        proceeds = round(exit_price * pos.shares_remaining - exit_commission, 2)
+        cash = round(cash + proceeds, 2)
         
-        final_leg_pnl = (exit_price - pos.entry_fill) * pos.shares_remaining - exit_commission
-        total_pnl_dollars = pos.realized_pnl_dollars + final_leg_pnl - pos.entry_commission
+        final_leg_pnl = round((exit_price - pos.entry_fill) * pos.shares_remaining - exit_commission, 2)
+        total_pnl_dollars = round(pos.realized_pnl_dollars + final_leg_pnl - pos.entry_commission, 2)
         
         risk_amount = (pos.entry_fill - pos.original_stop_loss) * pos.shares_initial
         pnl_r_multiple = total_pnl_dollars / risk_amount if risk_amount > 0 else 0.0
@@ -802,12 +807,12 @@ def run_backtest(
             return None, 0.0
         
         # Calculate PnL for this partial exit
-        exit_commission = cfg.commission_per_trade * (shares_to_sell / pos.shares_remaining)
-        proceeds = recycle_price * shares_to_sell - exit_commission
-        cash += proceeds
+        exit_commission = round(cfg.commission_per_trade * (shares_to_sell / pos.shares_remaining), 2)
+        proceeds = round(recycle_price * shares_to_sell - exit_commission, 2)
+        cash = round(cash + proceeds, 2)
         
-        partial_pnl = (recycle_price - pos.entry_fill) * shares_to_sell - exit_commission
-        pos.realized_pnl_dollars += partial_pnl
+        partial_pnl = round((recycle_price - pos.entry_fill) * shares_to_sell - exit_commission, 2)
+        pos.realized_pnl_dollars = round(pos.realized_pnl_dollars + partial_pnl, 2)
         
         # Calculate freed budget (proportional to shares sold)
         original_budget = pos.meta.get('allocation_budget_used', 0.0) if pos.meta else 0.0
@@ -871,7 +876,9 @@ def run_backtest(
     for current_date in all_dates:
         positions_to_close = []
         
-        for sym, pos in list(open_positions.items()):
+        # Iterate positions in deterministic order (sorted by symbol)
+        for sym in sorted(open_positions.keys()):
+            pos = open_positions[sym]
             if sym not in price_data_by_symbol:
                 continue
             df = price_data_by_symbol[sym]
@@ -950,12 +957,12 @@ def run_backtest(
                         shares_to_sell = max(1, min(shares_to_sell, pos.shares_remaining - 1))
                         
                         if shares_to_sell > 0 and pos.shares_remaining > 1:
-                            partial_pnl = (partial_fill_price - pos.entry_fill) * shares_to_sell - cfg.commission_per_trade
-                            pos.realized_pnl_dollars += partial_pnl
+                            partial_pnl = round((partial_fill_price - pos.entry_fill) * shares_to_sell - cfg.commission_per_trade, 2)
+                            pos.realized_pnl_dollars = round(pos.realized_pnl_dollars + partial_pnl, 2)
                             pos.shares_remaining -= shares_to_sell
                             pos.partial_tp_done = True
                             pos.partial_tp_date = current_date
-                            cash += partial_fill_price * shares_to_sell - cfg.commission_per_trade
+                            cash = round(cash + partial_fill_price * shares_to_sell - cfg.commission_per_trade, 2)
             
             if exit_price is None:
                 if open_price <= pos.stop_loss:
@@ -1003,11 +1010,12 @@ def run_backtest(
                 todays_signals.append(signal)
             signal_idx += 1
         
-        # Compute current equity once for all signals
-        current_equity = cash + sum(
-            pos.shares_remaining * _get_prior_close(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)
-            for pos in open_positions.values()
-        )
+        # Compute current equity once for all signals (deterministic order)
+        position_value = 0.0
+        for sym in sorted(open_positions.keys()):
+            pos = open_positions[sym]
+            position_value += round(pos.shares_remaining * _get_prior_close(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill), 2)
+        current_equity = round(cash + position_value, 2)
         
         # Pre-compute regime signals for current_date (once)
         current_trend = None
@@ -1182,24 +1190,31 @@ def run_backtest(
             blocked = [c for c in all_original_candidates 
                       if (c.signal.symbol, c.signal.pattern_id) not in allocated_ids]
             
-            # Get today's open price for recycling
+            # Get today's open price for recycling (deterministic order)
             recycle_prices = {}
-            for sym, pos in open_positions.items():
+            for sym in sorted(open_positions.keys()):
                 if sym in price_data_by_symbol and current_date in price_data_by_symbol[sym].index:
                     recycle_prices[sym] = price_data_by_symbol[sym].loc[current_date, 'Open']
             
-            # Process blocked candidates by score (best first)
-            blocked.sort(key=lambda c: c.allocation_score, reverse=True)
+            # Process blocked candidates by score (best first), with stable tie-break
+            blocked.sort(key=lambda c: (-c.allocation_score, c.signal.symbol, str(c.signal.pattern_id)))
             
             for blocked_cand in blocked:
-                if cfg.recycle_trigger_mode.upper() != "BUDGET_BLOCKED":
-                    break
+                # ALWAYS mode: process all blocked candidates
+                # BUDGET_BLOCKED mode: only process if candidate was specifically budget-blocked
+                # (Currently we don't track specific block reason per candidate, so ALWAYS processes all)
+                if cfg.recycle_trigger_mode.upper() == "BUDGET_BLOCKED":
+                    # In BUDGET_BLOCKED mode, only try recycling if we're truly out of budget
+                    # For now, process all blocked (conservative approach - any block triggers recycling attempt)
+                    pass  # Continue to try recycling
+                # ALWAYS mode processes all blocked candidates (no early break)
                 
                 new_score = blocked_cand.allocation_score
                 
                 # Find recyclable positions (worst first based on recycle score)
                 recyclable = []
-                for sym, pos in open_positions.items():
+                for sym in sorted(open_positions.keys()):
+                    pos = open_positions[sym]
                     # Eligibility checks
                     if pos.bars_held < cfg.recycle_min_hold_days:
                         continue
@@ -1222,8 +1237,8 @@ def run_backtest(
                     if score_gap >= cfg.recycle_min_score_gap:
                         recyclable.append((sym, pos, pos_recycle_score))
                 
-                # Sort by recycle score (worst = lowest first)
-                recyclable.sort(key=lambda x: x[2])
+                # Sort by recycle score (worst = lowest first), with stable tie-break
+                recyclable.sort(key=lambda x: (x[2], x[0]))
                 
                 # Try to free enough budget for this candidate
                 freed_total = 0.0
@@ -1302,7 +1317,7 @@ def run_backtest(
                     continue
             
             entry_commission = cfg.commission_per_trade
-            cash -= (cand.entry_fill * shares + entry_commission)
+            cash = round(cash - (cand.entry_fill * shares + entry_commission), 2)
             
             # Build position metadata
             pos_meta = signal.meta.copy() if signal.meta else {}
@@ -1346,13 +1361,15 @@ def run_backtest(
         if len(weekly_risk_history) > 5:
             weekly_risk_history = weekly_risk_history[-5:]
         
-        open_value = sum(
-            pos.shares_remaining * _get_price(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill)
-            for pos in open_positions.values()
-        )
-        total_equity = cash + open_value
-        running_max_equity = max(running_max_equity, total_equity)
-        drawdown_pct = (total_equity / running_max_equity - 1) * 100 if running_max_equity > 0 else 0.0
+        # Sum open position values in deterministic order to avoid floating-point drift
+        open_value = 0.0
+        for sym in sorted(open_positions.keys()):
+            pos = open_positions[sym]
+            open_value += round(pos.shares_remaining * _get_price(price_data_by_symbol, pos.symbol, current_date, pos.entry_fill), 2)
+        open_value = round(open_value, 2)
+        total_equity = round(cash + open_value, 2)
+        running_max_equity = round(max(running_max_equity, total_equity), 2)
+        drawdown_pct = round((total_equity / running_max_equity - 1) * 100, 2) if running_max_equity > 0 else 0.0
         
         equity_history.append({
             'date': current_date,
@@ -1363,7 +1380,9 @@ def run_backtest(
             'open_confirmed': sum(1 for p in open_positions.values() if p.entry_kind == "CONFIRMED")
         })
     
-    for sym, pos in list(open_positions.items()):
+    # Close remaining positions in deterministic order
+    for sym in sorted(open_positions.keys()):
+        pos = open_positions[sym]
         if sym in price_data_by_symbol:
             df = price_data_by_symbol[sym]
             if len(df) > 0:

@@ -882,8 +882,8 @@ def main():
             equity_diff = float('inf')
         
         try:
-            dd1 = metrics1.get('ALL', {}).get('max_dd_pct', 0)
-            dd2 = metrics2.get('ALL', {}).get('max_dd_pct', 0)
+            dd1 = metrics1.get('ALL', {}).get('max_drawdown_pct', 0)
+            dd2 = metrics2.get('ALL', {}).get('max_drawdown_pct', 0)
             dd_diff = abs((dd1 or 0) - (dd2 or 0))
             dd_match = dd_diff < 0.01
         except:
@@ -1127,6 +1127,15 @@ def main():
         trades_df, equity_df = run_backtest_v2(signals_by_symbol, price_data, cfg)
         
         os.makedirs('outputs', exist_ok=True)
+        
+        # Sort outputs deterministically before writing
+        if not trades_df.empty:
+            sort_cols = [c for c in ['entry_date', 'symbol', 'pattern_id'] if c in trades_df.columns]
+            if sort_cols:
+                trades_df = trades_df.sort_values(sort_cols).reset_index(drop=True)
+        if not equity_df.empty and 'date' in equity_df.columns:
+            equity_df = equity_df.sort_values('date').reset_index(drop=True)
+        
         trades_df.to_csv('outputs/trades.csv', index=False)
         equity_df.to_csv('outputs/equity.csv', index=False)
         
@@ -1245,7 +1254,7 @@ def main():
                 'symbols_seed': args.symbols_seed,
                 'metrics': {
                     'total_return': split_metrics.get('ALL', {}).get('total_return_pct', 0),
-                    'max_dd': split_metrics.get('ALL', {}).get('max_dd_pct', 0),
+                    'max_dd': split_metrics.get('ALL', {}).get('max_drawdown_pct', 0),
                     'trades': split_metrics.get('ALL', {}).get('trade_count', 0),
                 }
             }
@@ -1334,7 +1343,7 @@ def run_recycling_comparison(args, signals_by_symbol, price_data, base_cfg):
         recycling_eff = compute_recycling_effectiveness_metrics(trades_df)
         
         total_return = split_metrics.get('ALL', {}).get('total_return_pct', 0)
-        max_dd = split_metrics.get('ALL', {}).get('max_dd_pct', 0)
+        max_dd = split_metrics.get('ALL', {}).get('max_drawdown_pct', 0)
         trade_count = split_metrics.get('ALL', {}).get('trade_count', 0)
         
         results.append({
