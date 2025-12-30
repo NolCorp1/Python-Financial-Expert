@@ -1,0 +1,118 @@
+Task 27 — Recycling Robustness Validation + Regression Tests
+
+Goal
+Validate that the new recycling quality gates remain robust across:
+- different seeds
+- multiple universes (demo + any larger universe you already have)
+- stress modes (LOW_BUDGET / HIGH_SIGNAL_DENSITY / BOTH)
+…and add a small regression test harness so we never ship a “recycling fires but is low-quality” bug again.
+
+Why
+Task 26 produced excellent results on a single repro. We now need:
+1) confidence it generalizes
+2) automated guardrails so false_recycle_rate doesn’t creep back up
+
+------------------------------------------------------------
+Part A — Add a Robustness Runner Script
+------------------------------------------------------------
+
+Create:
+scripts/validate_recycling_robustness.py
+
+Script behavior:
+Run a matrix of backtests using subprocess, always with:
+  --price-cache-policy READONLY
+  --use-capital-recycling true
+  --recycle-trigger-mode ALWAYS
+  --daily-risk-budget 0.01
+  --daily-risk-budget-forming 0.003
+  --max-positions-total 4
+  --max-positions-forming 2
+  --run-recycling-comparison true
+  --quiet
+
+Sweep:
+- symbols_seed: [1, 2, 3, 7, 42, 123]
+- recycling_stress_mode: [NONE, LOW_BUDGET, HIGH_SIGNAL_DENSITY, BOTH]
+- universe: ["demo"] (+ include any non-demo universe if present in universe.py)
+
+For each run:
+- Read outputs/metrics.json
+- Extract and log:
+  - total_return_pct, max_drawdown_pct, trades
+  - recycling_effectiveness: recycle_events_count, pct_trades_recycled,
+    avg_swap_edge_r, false_recycle_rate, avg_capital_reuse_efficiency
+  - recycling_debug: blocked_signals_total, denied reasons (optional)
+
+Write a consolidated CSV:
+outputs/recycling_robustness_matrix.csv
+
+Also print a concise “worst cases” summary:
+- Worst false_recycle_rate runs (top 5)
+- Worst avg_swap_edge_r runs (bottom 5)
+
+------------------------------------------------------------
+Part B — Add Regression Assertions (Fail Fast)
+------------------------------------------------------------
+
+Create:
+scripts/check_recycling_quality.py
+
+Behavior:
+- Loads outputs/metrics.json
+- Asserts the following minimum bars when recycling is enabled and trigger=ALWAYS:
+  - recycle_events_count >= 1  (warn only if 0; do not hard fail)
+  - false_recycle_rate <= 40%  (HARD FAIL)
+  - avg_swap_edge_r >= 0.00R   (HARD FAIL)
+- Print clear PASS/FAIL lines and exit 0/1 accordingly
+
+Wire into main.py:
+If flags include:
+  --use-capital-recycling true AND --recycle-trigger-mode ALWAYS
+and also user passes new flag:
+  --verify-recycling true
+then after backtest completes, run scripts/check_recycling_quality.py.
+Default for --verify-recycling: true (ONLY in backtest-v2 mode).
+
+------------------------------------------------------------
+Part C — Determinism Guard
+------------------------------------------------------------
+
+Add an optional verification:
+scripts/check_determinism_hashes.py
+
+Behavior:
+Given a command string, run it twice and sha256sum:
+- outputs/trades.csv
+- outputs/equity.csv
+- outputs/metrics.json
+Fail if any differ.
+
+Not run by default; used manually and in docs.
+
+------------------------------------------------------------
+Acceptance Criteria
+------------------------------------------------------------
+
+1) Robustness matrix generated:
+python -m scripts.validate_recycling_robustness
+creates outputs/recycling_robustness_matrix.csv with >= (seeds * stress_modes * universes) rows.
+
+2) Quality holds in worst cases:
+Across the matrix:
+- false_recycle_rate <= 40% for all runs (or explicitly list any failures)
+- avg_swap_edge_r >= 0.00R for all runs (or explicitly list any failures)
+
+3) Regression checker works:
+Run a backtest with ALWAYS mode then:
+python -m scripts.check_recycling_quality
+prints PASS and exits 0.
+
+4) Determinism stays intact (manual):
+Use READONLY and verify hashes match with scripts/check_determinism_hashes.py.
+
+Deliverables
+- New scripts added
+- main.py flag --verify-recycling wired
+- outputs/recycling_robustness_matrix.csv generated from at least demo universe
+- Short note added to replit.md: how to run robustness + what thresholds mean
