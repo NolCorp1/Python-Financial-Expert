@@ -667,6 +667,9 @@ def main():
     parser.add_argument('--run-recycling-comparison', type=str, default='false',
                        choices=['true', 'false'],
                        help='Run OFF/PARTIAL/EXIT recycling comparison')
+    parser.add_argument('--verify-recycling', type=str, default='true',
+                       choices=['true', 'false'],
+                       help='Run recycling quality check after backtest (Task 27)')
     
     # Price cache policy (Task 24A)
     parser.add_argument('--price-cache-policy', type=str, default='OFF',
@@ -1374,6 +1377,17 @@ def main():
         
         if args.run_recycling_comparison.lower() == 'true':
             run_recycling_comparison(args, signals_by_symbol, price_data, cfg)
+        
+        if (args.verify_recycling.lower() == 'true' and 
+            args.use_capital_recycling.lower() == 'true' and 
+            args.recycle_trigger_mode.upper() == 'ALWAYS'):
+            from scripts.check_recycling_quality import main as check_recycling_quality
+            print("\n" + "-" * 50)
+            print("RECYCLING QUALITY VERIFICATION")
+            print("-" * 50)
+            check_result = check_recycling_quality()
+            if check_result != 0:
+                print("WARNING: Recycling quality check did not pass")
         
         return trades_df, equity_df, split_metrics
     
