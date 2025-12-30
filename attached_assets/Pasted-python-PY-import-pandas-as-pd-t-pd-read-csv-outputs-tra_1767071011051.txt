@@ -1,0 +1,63 @@
+python - <<'PY'
+import pandas as pd
+
+t = pd.read_csv("outputs/trades.csv")
+
+required = ["symbol","pattern_id","entry_date","exit_date","entry_kind"]
+missing = [c for c in required if c not in t.columns]
+if missing:
+    raise RuntimeError(f"Missing columns: {missing}. Have: {list(t.columns)}")
+
+t["entry_date"] = pd.to_datetime(t["entry_date"])
+t["exit_date"]  = pd.to_datetime(t["exit_date"], errors="coerce")
+
+end = t["exit_date"].max()
+t["exit_date"] = t["exit_date"].fillna(end)
+
+tt = t.sort_values(["symbol","entry_date","exit_date"]).copy()
+
+pos_ids = []
+for sym, g in tt.groupby("symbol", sort=False):
+    cur_end = None
+    cycle = 0
+    for idx, row in g.iterrows():
+        if cur_end is None or row["entry_date"] > cur_end:
+            cycle += 1
+            cur_end = row["exit_date"]
+        else:
+            cur_end = max(cur_end, row["exit_date"])
+        pos_ids.append((idx, f"{sym}__{cycle}"))
+
+id_map = dict(pos_ids)
+tt["position_uid"] = tt.index.map(id_map)
+
+def confirmed_start(g):
+    m = g["entry_kind"].astype(str).str.upper() == "CONFIRMED"
+    if m.any():
+        return pd.to_datetime(g.loc[m, "entry_date"]).min()
+    return pd.NaT
+
+pos = tt.groupby("position_uid").apply(lambda g: pd.Series({
+    "symbol": g["symbol"].iloc[0],
+    "entry_date": g["entry_date"].min(),
+    "exit_date":  g["exit_date"].max(),
+    "confirmed_start": confirmed_start(g),
+})).reset_index()
+
+dates = pd.date_range(pos["entry_date"].min(), pos["exit_date"].max(), freq="D")
+
+rows = []
+for d in dates:
+    open_mask = (pos["entry_date"] <= d) & (pos["exit_date"] > d)  # exit exclusive
+    forming_mask = open_mask & (pos["confirmed_start"].isna() | (d < pos["confirmed_start"]))
+    rows.append((d.date(), int(open_mask.sum()), int(forming_mask.sum())))
+
+df = pd.DataFrame(rows, columns=["date","open_total","open_forming"])
+
+print("max open_total:", df["open_total"].max())
+print("max open_forming:", df["open_forming"].max())
+print("\nTop days by open_total:")
+print(df.sort_values("open_total", ascending=False).head(12).to_string(index=False))
+print("\nTop days by open_forming:")
+print(df.sort_values("open_forming", ascending=False).head(12).to_string(index=False))
+PY

@@ -1,0 +1,3 @@
+76a0a7b5f667ca2ff37ea61ff7f2f38d0caeefe159bd2d6c40e77368b867f312  outputs/trades.csv
+ce8d4ff03b96a75c43e7947f959d85ee9f196c5ca853d06d3043a8252d6d3cee  outputs/equity.csv
+945ff6d56283f34f2e0fac3fe91f105d46c71056e21e30e0b4e07ccaaf2c07ab  outputs/metrics.json
