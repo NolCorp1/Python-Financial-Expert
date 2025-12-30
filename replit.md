@@ -28,6 +28,14 @@ I prefer iterative development, so please propose changes and explain them thoro
     - **Parity Check**: Verifies identical results between runs using a given configuration.
     - **Price Cache Integrity**: Tools to generate and repair price cache reports.
     - **Determinism Fixes** (Task 23): Fixed floating-point drift in backtester.py by using deterministic iteration order for open positions (sorted by symbol), rounding equity/cash calculations, and adding price data normalization in download_stock_data. trades.csv and metrics.json are now fully deterministic; equity.csv may have minor cent-level variations due to yfinance API floating-point differences between process runs (use price cache for full determinism).
+    - **Price Cache Policies** (Task 24): Supports `--price-cache-policy` with four modes for reproducible runs:
+      - `AUTO` (default): Load from cache if fresh (<24h), else refresh from yfinance
+      - `READONLY`: Load only from cache; fail with CacheMissError if missing (guarantees full determinism)
+      - `REFRESH`: Always download fresh data and update cache
+      - `OFF`: Bypass cache entirely, always download fresh
+    - Price data is normalized (prices rounded to 2 decimals, volumes to integers) for floating-point stability.
+    - Price provenance (policy, cache hits/misses, source) is tracked in manifests for audit trails.
+    - **Recycling Trigger Fix** (Task 24 Part B): ALWAYS mode now considers signals blocked by position limits, correlation caps, and cluster caps (not just budget-blocked signals) for recycling opportunities.
 - **Pattern Quality Scoring**: A 0-100 score based on pre-entry data, incorporating symmetry, neckline, separation, breakout strength, volume, and trend context.
 - **Score Inversion Fix**: Diagnostic and adjustment tools (`--score-policy INVERT`, `--trend-score-mode NEUTRAL`) for scenarios where high scores underperform.
 - **Score Policy Selection & Production Defaults**: Walk-forward aggregation by scoring knobs (`compute_score_policy_wf_summary`), stability-first selector (`select_best_scoring_defaults`), and enhanced validation mode with dual backtests.

@@ -1345,11 +1345,71 @@ def run_backtest(
                             if pos.shares_remaining <= 0:
                                 del open_positions[sym]
                 
-                # If we freed enough, add candidate back to allocation
+                # If we freed enough, verify constraints before adding candidate back
                 if freed_total >= needed_budget * 0.5:  # At least 50% freed
-                    blocked_cand.allocation_scale = min(1.0, freed_total / blocked_cand.risk_fraction)
-                    blocked_cand.allocation_budget_used = blocked_cand.risk_fraction * blocked_cand.allocation_scale
-                    candidates.append(blocked_cand)
+                    # Re-check constraints for constraint-blocked candidates (Part B fix)
+                    block_reason = getattr(blocked_cand, 'block_reason', None)
+                    can_proceed = True
+                    
+                    if block_reason is not None:
+                        # Re-validate the constraint that originally blocked this signal
+                        cand_sym = blocked_cand.signal.symbol
+                        current_total = len(open_positions) + len(candidates)
+                        current_forming = sum(1 for p in open_positions.values() if p.entry_kind == "FORMING") + \
+                                         sum(1 for c in candidates if c.signal.entry_kind == "FORMING")
+                        current_confirmed = sum(1 for p in open_positions.values() if p.entry_kind == "CONFIRMED") + \
+                                           sum(1 for c in candidates if c.signal.entry_kind == "CONFIRMED")
+                        
+                        if block_reason == 'max_positions_total' and current_total >= cfg.max_positions_total:
+                            can_proceed = False
+                        elif block_reason == 'max_positions_forming' and blocked_cand.signal.entry_kind == "FORMING" and current_forming >= cfg.max_positions_forming:
+                            can_proceed = False
+                        elif block_reason == 'max_positions_confirmed' and blocked_cand.signal.entry_kind == "CONFIRMED" and current_confirmed >= cfg.max_positions_confirmed:
+                            can_proceed = False
+                        elif block_reason == 'corr_cap':
+                            # Re-check correlation cap with current open positions AND pending candidates
+                            max_corr_found = 0.0
+                            if cfg.use_correlation_caps and cand_sym in corr_matrix.columns:
+                                # Check open positions
+                                for open_sym in open_positions.keys():
+                                    if open_sym in corr_matrix.columns:
+                                        try:
+                                            corr_val = corr_matrix.loc[cand_sym, open_sym]
+                                            if not pd.isna(corr_val):
+                                                max_corr_found = max(max_corr_found, abs(corr_val))
+                                        except (KeyError, TypeError):
+                                            pass
+                                # Also check pending candidates
+                                for pending_cand in candidates:
+                                    pending_sym = pending_cand.signal.symbol
+                                    if pending_sym in corr_matrix.columns:
+                                        try:
+                                            corr_val = corr_matrix.loc[cand_sym, pending_sym]
+                                            if not pd.isna(corr_val):
+                                                max_corr_found = max(max_corr_found, abs(corr_val))
+                                        except (KeyError, TypeError):
+                                            pass
+                                if max_corr_found >= cfg.max_corr_to_existing:
+                                    can_proceed = False
+                        elif block_reason == 'cluster_cap':
+                            # Re-check cluster cap with current open positions AND pending candidates
+                            if cfg.use_cluster_caps and cand_sym in clusters:
+                                sym_cluster = clusters[cand_sym]
+                                cluster_count_open = sum(
+                                    1 for p in open_positions.values() 
+                                    if clusters.get(p.symbol, -1) == sym_cluster
+                                )
+                                cluster_count_pending = sum(
+                                    1 for c in candidates
+                                    if clusters.get(c.signal.symbol, -1) == sym_cluster
+                                )
+                                if (cluster_count_open + cluster_count_pending) >= cfg.max_positions_per_cluster:
+                                    can_proceed = False
+                    
+                    if can_proceed:
+                        blocked_cand.allocation_scale = min(1.0, freed_total / blocked_cand.risk_fraction)
+                        blocked_cand.allocation_budget_used = blocked_cand.risk_fraction * blocked_cand.allocation_scale
+                        candidates.append(blocked_cand)
         
         # Execute entries for allocated candidates
         for cand in candidates:
