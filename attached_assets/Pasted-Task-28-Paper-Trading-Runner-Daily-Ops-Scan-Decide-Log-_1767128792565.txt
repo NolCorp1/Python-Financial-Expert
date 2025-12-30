@@ -1,0 +1,148 @@
+Task 28 — Paper Trading Runner + Daily Ops (Scan → Decide → Log → Report)
+
+Objective
+Ship a “paper trading” workflow that runs the same pipeline daily (like live), produces an order blotter, tracks a paper portfolio over time, and generates a daily report + alerts. This is the bridge between deterministic backtests and live execution.
+
+Why
+Backtests are now deterministic and recycling is robust. Next we need an operational loop:
+- Today’s scan → signals → portfolio constraints → “orders to place”
+- Track holdings + cash + PnL in a persistent paper account
+- Daily report + audit trail
+- Zero ambiguity: same inputs => same outputs
+
+Scope
+1) New paper portfolio state (persisted)
+2) New paper runner script (one command, idempotent per date)
+3) Order blotter output (csv/json)
+4) Daily report output (md/txt + key metrics json)
+5) Safety checks: cache policy, duplicate-run protection, position caps enforcement, and recycling stats.
+
+Implementation Plan (exact edits)
+
+A) Add persistent paper portfolio state
+Create: src/paper_portfolio.py
+- Data model stored at: data/paper/portfolio_state.json
+- Fields:
+  - as_of_date (YYYY-MM-DD)
+  - cash
+  - equity
+  - open_positions: list of {symbol, position_uid, qty, entry_date, entry_price, stop_price, risk_budget_used, stage, metadata}
+  - closed_positions: append-only list
+  - history: list of daily snapshots {date, equity, cash, open_positions_count, forming_count, confirmed_count, daily_pnl}
+- Functions:
+  - load_state(path) -> dict (create default if missing)
+  - save_state(path, state)
+  - mark_to_market(state, prices_by_symbol, date) -> (state, daily_pnl)
+  - apply_fills(state, fills_df_or_list) -> updated state
+  - enforce_caps(state, max_total, max_forming) -> raise with helpful error if violated
+
+B) Create daily paper runner
+Create: scripts/run_paper_daily.py
+CLI:
+  --date YYYY-MM-DD (default: today in NY timezone)
+  --universe demo|nasdaq|...
+  --max-stocks N
+  --symbols-seed INT
+  --price-cache-policy AUTO|READONLY|REFRESH|OFF  (default AUTO for paper)
+  --paper-state-path data/paper/portfolio_state.json
+  --output-dir outputs/paper/YYYYMMDD/
+  --dry-run (no state write)
+  --export-orders true/false (default true)
+  --export-report true/false (default true)
+
+Flow:
+1) Load paper portfolio state
+2) Fetch/resolve prices for “date”:
+   - For paper, allow AUTO/REFRESH but record provenance in paper manifest
+3) Mark-to-market existing portfolio to “date” close (or chosen pricing convention)
+4) Run the same signal generation + allocation pipeline used in backtest-v2 BUT:
+   - It should output “target entries” for the day (signals that would be opened)
+   - It must respect:
+     - max positions total/forming
+     - cluster caps / correlation caps if enabled
+     - daily budgets
+     - capital recycling (if enabled)
+5) Convert target entries into “paper orders”:
+   - csv: outputs/paper/YYYYMMDD/orders.csv
+   - json: outputs/paper/YYYYMMDD/orders.json
+   Columns:
+     date, symbol, side, qty, order_type, limit_price(optional), reason, stage, score, risk_budget, stop_price, take_profit(optional), metadata_json
+6) “Fill model”:
+   - For now: assume filled at next open or same close (configurable)
+   - Start simple: filled at close price on --date
+7) Apply fills to portfolio state, persist state unless --dry-run
+8) Export daily report:
+   - outputs/paper/YYYYMMDD/report.md
+   Include:
+     - equity, daily pnl, drawdown since inception
+     - open positions (counts + list)
+     - new entries (orders)
+     - recycling summary:
+       recycle_events_count, pct_trades_recycled, avg_swap_edge_r, false_recycle_rate
+     - manifest pointer
+
+C) Paper manifests + audit trail
+Reuse existing manifest system OR create paper manifest:
+Create: outputs/paper/YYYYMMDD/paper_manifest.json
+Must include:
+- run_id
+- date
+- git commit hash (if available)
+- cli args
+- price cache policy + hits/misses + symbols
+- recycling settings + gates
+- hashes of orders.csv, report.md, paper_manifest.json
+
+D) Wire into main.py
+Add command:
+  python main.py --paper-daily ...
+Option 1: add a new subcommand-like flag --paper-daily that dispatches into scripts/run_paper_daily.py logic
+Option 2: keep as script only; but MUST be documented in replit.md.
+
+E) Robustness: idempotence + duplicate run protection
+- If outputs/paper/YYYYMMDD/paper_manifest.json exists AND portfolio_state.as_of_date == date:
+  - runner should exit with a clear message unless --force is passed
+Add CLI:
+  --force (overwrite outputs and re-run; still keep state backups)
+
+F) Update documentation
+Edit: replit.md
+Add section:
+- Paper Trading Quickstart
+- Example commands
+- Where outputs live
+- How to reset paper account (delete state file)
+- Recommended cache policy: AUTO for paper, READONLY for reproducible research
+
+Acceptance Criteria
+1) One command runs end-to-end and produces:
+   - data/paper/portfolio_state.json updated to --date
+   - outputs/paper/YYYYMMDD/orders.csv and orders.json
+   - outputs/paper/YYYYMMDD/report.md
+   - outputs/paper/YYYYMMDD/paper_manifest.json
+2) Runner is idempotent:
+   - Running twice for same --date without --force does NOT mutate state and exits cleanly
+3) Caps are enforced:
+   - open total <= --max-positions-total
+   - open forming <= --max-positions-forming
+4) Recycling metrics appear in report.md whenever recycling enabled:
+   - recycle_events_count, avg_swap_edge_r, false_recycle_rate
+5) Determinism mode supported:
+   - If --price-cache-policy READONLY is used, the orders.csv hash must match across repeated runs for the same --date and same args.
+
+Test Commands
+1) First run:
+python main.py --paper-daily --universe demo --max-stocks 20 --symbols-seed 123 --date 2025-12-30 --price-cache-policy READONLY --use-capital-recycling true --recycle-trigger-mode ALWAYS
+
+2) Repeat run (should exit idempotently):
+python main.py --paper-daily --universe demo --max-stocks 20 --symbols-seed 123 --date 2025-12-30 --price-cache-policy READONLY --use-capital-recycling true --recycle-trigger-mode ALWAYS
+
+3) Force rerun (should overwrite outputs but keep state backups):
+python main.py --paper-daily --universe demo --max-stocks 20 --symbols-seed 123 --date 2025-12-30 --price-cache-policy READONLY --use-capital-recycling true --recycle-trigger-mode ALWAYS --force
+
+Deliverables Checklist
+- src/paper_portfolio.py
+- scripts/run_paper_daily.py (or integrated entrypoint)
+- main.py wiring (if choosing --paper-daily)
+- replit.md updates
+- sample outputs verified in outputs/paper/YYYYMMDD/
